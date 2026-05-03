@@ -31,6 +31,8 @@ def sample(logits: mx.array, temperature: float, top_p: float) -> mx.array:
 def generate(messages: list[dict], max_tokens: int = 512, temperature: float = 0.7, top_p: float = 0.9):
     input_ids = build_prompt(messages)
     tokens = input_ids
+    generated_ids = []
+    decoded_so_far = ""
 
     for _ in range(max_tokens):
         logits = model(tokens[None])  # (1, seq_len, vocab_size)
@@ -45,7 +47,12 @@ def generate(messages: list[dict], max_tokens: int = 512, temperature: float = 0
             break
 
         tokens = mx.concatenate([tokens, mx.array([token_id])])
-        yield tokenizer.decode([token_id])
+        generated_ids.append(token_id)
+        new_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+        safe_text = new_text.rstrip('�')
+        if len(safe_text) > len(decoded_so_far):
+            yield safe_text[len(decoded_so_far):]
+            decoded_so_far = safe_text
 
 
 if __name__ == "__main__":

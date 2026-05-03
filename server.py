@@ -2,12 +2,13 @@ import json
 import time
 import uuid
 
+from pathlib import Path
+
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from inference import generate
-from inference import tokenizer
 
 app = FastAPI()
 
@@ -54,6 +55,11 @@ def stream_response(request: ChatRequest):
     for token in generate(messages, max_tokens=request.max_tokens, temperature=request.temperature, top_p=request.top_p):
         yield make_chunk(token, request_id)
     yield make_done_chunk(request_id)
+
+
+@app.get("/chat")
+async def chat_ui():
+    return FileResponse(Path(__file__).parent / "static" / "chat.html")
 
 
 @app.post("/v1/chat/completions")
