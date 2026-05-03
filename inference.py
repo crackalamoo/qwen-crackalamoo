@@ -6,8 +6,7 @@ MODEL_ID = "mlx-community/Qwen3-8B-4bit"
 model, tokenizer = load(MODEL_ID)
 
 
-def build_prompt(user_message: str) -> mx.array:
-    messages = [{"role": "user", "content": user_message}]
+def build_prompt(messages: list[dict]) -> mx.array:
     text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
@@ -29,8 +28,8 @@ def sample(logits: mx.array, temperature: float, top_p: float) -> mx.array:
     return indices[sampled]
 
 
-def generate(prompt: str, max_tokens: int = 512, temperature: float = 0.7, top_p: float = 0.9):
-    input_ids = build_prompt(prompt)
+def generate(messages: list[dict], max_tokens: int = 512, temperature: float = 0.7, top_p: float = 0.9):
+    input_ids = build_prompt(messages)
     tokens = input_ids
 
     for _ in range(max_tokens):
@@ -51,7 +50,8 @@ def generate(prompt: str, max_tokens: int = 512, temperature: float = 0.7, top_p
 
 if __name__ == "__main__":
     prompt = "Explain what a KV cache is in one paragraph."
+    messages = [{"role": "user", "content": prompt}]
     print(f"Prompt: {prompt}\n")
-    for chunk in generate(prompt):
+    for chunk in generate(messages):
         print(chunk, end="", flush=True)
     print()
