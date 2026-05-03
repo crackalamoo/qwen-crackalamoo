@@ -1,5 +1,6 @@
 import mlx.core as mx
 from mlx_lm import load
+from mlx_lm.models.cache import make_prompt_cache
 
 MODEL_ID = "mlx-community/Qwen3-8B-4bit"
 
@@ -30,12 +31,15 @@ def sample(logits: mx.array, temperature: float, top_p: float) -> mx.array:
 
 def generate(messages: list[dict], max_tokens: int = 512, temperature: float = 0.7, top_p: float = 0.9):
     input_ids = build_prompt(messages)
-    tokens = input_ids
+    cache = make_prompt_cache(model)
+
+    # prefill
+    logits = model(input_ids[None], cache=cache)
+
     generated_ids = []
     decoded_so_far = ""
 
     for _ in range(max_tokens):
-        logits = model(tokens[None])  # (1, seq_len, vocab_size)
         next_token_logits = logits[0, -1, :]  # (vocab_size,) — only the last position
 
         next_token = sample(next_token_logits, temperature, top_p)
@@ -46,13 +50,15 @@ def generate(messages: list[dict], max_tokens: int = 512, temperature: float = 0
         if token_id == tokenizer.eos_token_id:
             break
 
-        tokens = mx.concatenate([tokens, mx.array([token_id])])
         generated_ids.append(token_id)
         new_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
         safe_text = new_text.rstrip('�')
         if len(safe_text) > len(decoded_so_far):
             yield safe_text[len(decoded_so_far):]
             decoded_so_far = safe_text
+
+        # prepare for next iteration
+        logits = model(mx.array([[token_id]]), cache=cache)  # (1, seq_len, vocab_size)
 
 
 if __name__ == "__main__":
