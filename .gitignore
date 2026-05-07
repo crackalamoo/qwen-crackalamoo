@@ -10,3 +10,9 @@ wheels/
 .venv
 
 .claude/settings.local.json
+
+# Data
+adapters.npz
+finetune_data.jsonl
+train.jsonl
+val.jsonl

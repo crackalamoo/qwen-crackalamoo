@@ -6,6 +6,17 @@ MODEL_ID = "mlx-community/Qwen3-8B-4bit"
 
 model, tokenizer = load(MODEL_ID)
 
+# optionally load a LoRA adapter: set ADAPTER env var to path/to/adapters.npz
+import os
+_adapter_path = os.environ.get("ADAPTER")
+if _adapter_path:
+    from finetune.train import inject_lora
+    inject_lora(model, rank=8, alpha=16)
+    weights = list(mx.load(_adapter_path).items())
+    model.load_weights(weights, strict=False)
+    mx.eval(model.parameters())
+    print(f"Loaded adapter: {_adapter_path}")
+
 
 def build_prompt(messages: list[dict]) -> mx.array:
     text = tokenizer.apply_chat_template(
