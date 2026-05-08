@@ -17,10 +17,10 @@ LORA_RANK = 8
 LORA_ALPHA = 16
 LEARNING_RATE = 1e-5
 BATCH_SIZE = 4
-EPOCHS = 1
+EPOCHS = 2
 TRAIN_PATH = str(Path(__file__).parent.parent / "train.jsonl")
 VAL_PATH = str(Path(__file__).parent.parent / "val.jsonl")
-VAL_EVERY = 500
+VAL_EVERY = 250
 ADAPTER_PATH = str(Path(__file__).parent / "adapters.npz")
 
 

@@ -14,5 +14,7 @@ wheels/
 # Data
 adapters.npz
 finetune_data.jsonl
+blog.json
+blog_data.jsonl
 train.jsonl
 val.jsonl

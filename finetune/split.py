@@ -1,15 +1,34 @@
 import json
 import random
 from pathlib import Path
+from mlx_lm import load
 
 SRC = Path(__file__).parent.parent / "finetune_data.jsonl"
+BLOG_SRC = Path(__file__).parent.parent / "blog_data.jsonl"
 TRAIN = Path(__file__).parent.parent / "train.jsonl"
 VAL = Path(__file__).parent.parent / "val.jsonl"
 VAL_FRACTION = 0.05
 SEED = 42
+MIN_COMPLETION_TOKENS = 20
+
+_, tokenizer = load("mlx-community/Qwen3-8B-4bit")
 
 with open(SRC) as f:
-    examples = [json.loads(l) for l in f]
+    raw = [json.loads(l) for l in f]
+
+# blog examples skip the token filter — they're already long-form
+blog = []
+if BLOG_SRC.exists():
+    with open(BLOG_SRC) as f:
+        blog = [json.loads(l) for l in f]
+
+discord = [
+    ex for ex in raw
+    if len(tokenizer.encode(ex["messages"][-1]["content"])) >= MIN_COMPLETION_TOKENS
+]
+print(f"Discord filtered: {len(raw)} → {len(discord)} ({100*len(discord)/len(raw):.1f}% kept)")
+print(f"Blog examples: {len(blog)}")
+examples = discord + (blog * 5)
 
 random.seed(SEED)
 random.shuffle(examples)
