@@ -40,7 +40,7 @@ def sample(logits: mx.array, temperature: float, top_p: float) -> mx.array:
     return indices[sampled]
 
 
-def generate(messages: list[dict], max_tokens: int = 512, temperature: float = 0.7, top_p: float = 0.9):
+def generate(messages: list[dict], max_tokens: int = 512, temperature: float = 0.7, top_p: float = 0.9, repetition_penalty=1.1):
     input_ids = build_prompt(messages)
     cache = make_prompt_cache(model)
 
@@ -52,6 +52,18 @@ def generate(messages: list[dict], max_tokens: int = 512, temperature: float = 0
 
     for _ in range(max_tokens):
         next_token_logits = logits[0, -1, :]  # (vocab_size,) — only the last position
+
+        if repetition_penalty != 1.0:
+            penalty_vec = mx.ones(next_token_logits.shape[0])
+            apply_penalty_array = mx.array(repetition_penalty)
+            token_id_range = mx.arange(next_token_logits.shape[0])
+            for token_id in set(generated_ids):
+                penalty_vec = mx.where(
+                    token_id_range == token_id,
+                    apply_penalty_array,
+                    penalty_vec,
+                )
+            next_token_logits = next_token_logits / penalty_vec
 
         next_token = sample(next_token_logits, temperature, top_p)
         mx.eval(next_token)
