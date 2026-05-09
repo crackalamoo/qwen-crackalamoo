@@ -16,7 +16,8 @@ MODEL_ID = "mlx-community/Qwen3-8B-4bit"
 LORA_RANK = 8
 LORA_ALPHA = 16
 LEARNING_RATE = 1e-5
-BATCH_SIZE = 4
+BATCH_SIZE = 64
+BATCH_TOKEN_BUDGET = 1024
 EPOCHS = 2
 TRAIN_PATH = str(Path(__file__).parent.parent / "train.jsonl")
 VAL_PATH = str(Path(__file__).parent.parent / "val.jsonl")
@@ -64,8 +65,8 @@ def train(max_steps: int = None):
     print(f"Trainable: {trainable:,} / {total:,} ({100*trainable/total:.2f}%)")
 
     optimizer = AdamW(learning_rate=LEARNING_RATE)
-    loader = DataLoader(TRAIN_PATH, tokenizer, batch_size=BATCH_SIZE)
-    val_loader = DataLoader(VAL_PATH, tokenizer, batch_size=BATCH_SIZE)
+    loader = DataLoader(TRAIN_PATH, tokenizer, batch_size=BATCH_SIZE, token_budget=BATCH_TOKEN_BUDGET)
+    val_loader = DataLoader(VAL_PATH, tokenizer, batch_size=BATCH_SIZE, token_budget=BATCH_TOKEN_BUDGET)
 
     loss_and_grad = nn.value_and_grad(model, loss_fn)
     t_start = time.time()

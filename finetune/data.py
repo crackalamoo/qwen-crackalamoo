@@ -6,9 +6,10 @@ IGNORE_INDEX = -100
 
 
 class DataLoader:
-    def __init__(self, path: str, tokenizer, batch_size: int):
+    def __init__(self, path: str, tokenizer, batch_size: int, token_budget: int):
         self.tokenizer = tokenizer
         self.batch_size = batch_size
+        self.token_budget = token_budget
         self.offsets = []
         self.file = open(path, "r")
         while True:
@@ -42,18 +43,13 @@ class DataLoader:
     def __iter__(self):
         random.shuffle(self.offsets)
 
-        for i in range(0, len(self.offsets), self.batch_size):
-            offsets = self.offsets[i : min(i+self.batch_size,len(self.offsets))]
-            batch = []
-            for offset in offsets:
-                src, tgt = self._load(offset)
-                batch.append([src, tgt])
+        def _make_batch(batch):
+            pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
 
             longest = 0
             for src, _tgt in batch:
                 longest = max(longest, len(src))
 
-            pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
             for j in range(len(batch)):
                 src, tgt = batch[j]
                 padding = longest - len(src)
@@ -64,10 +60,30 @@ class DataLoader:
                     batch[j][0] = mx.array(src)
                     batch[j][1] = mx.array(tgt)
 
-            if longest > 256:
-                continue
-
             batch = mx.array([b[0] for b in batch]), mx.array([b[1] for b in batch])
+            return batch
 
-            yield batch
+        for i in range(0, len(self.offsets), self.batch_size):
+            window = self.offsets[i:i+self.batch_size]
+            examples = [self._load(offset) for offset in window]
+            examples.sort(key=lambda e: len(e[0]))
+
+
+            batch = []
+            batch_tokens = 0
+            for src, tgt in examples:
+                if len(src) > self.token_budget:
+                    continue
+                elif batch_tokens + len(src) > self.token_budget:
+                    if batch:
+                        yield _make_batch(batch)
+                    batch = []
+                    batch_tokens = 0
+
+                batch_tokens += len(src)
+                batch.append([src, tgt])
+
+
+            if batch:
+                yield _make_batch(batch)
 

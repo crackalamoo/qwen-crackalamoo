@@ -5,6 +5,7 @@ from mlx_lm import load
 
 SRC = Path(__file__).parent.parent / "finetune_data.jsonl"
 BLOG_SRC = Path(__file__).parent.parent / "blog_data.jsonl"
+ALPACA_SRC = Path(__file__).parent.parent / "alpaca_data.jsonl"
 TRAIN = Path(__file__).parent.parent / "train.jsonl"
 VAL = Path(__file__).parent.parent / "val.jsonl"
 VAL_FRACTION = 0.05
@@ -28,7 +29,13 @@ discord = [
 ]
 print(f"Discord filtered: {len(raw)} → {len(discord)} ({100*len(discord)/len(raw):.1f}% kept)")
 print(f"Blog examples: {len(blog)}")
-examples = discord + (blog * 5)
+alpaca = []
+if ALPACA_SRC.exists():
+    with open(ALPACA_SRC) as f:
+        alpaca = [json.loads(l) for l in f]
+print(f"Alpaca examples: {len(alpaca)}")
+
+examples = discord + (blog * 5) + alpaca
 
 random.seed(SEED)
 random.shuffle(examples)
