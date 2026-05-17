@@ -13,10 +13,12 @@ wheels/
 
 # Data
 adapters.npz
+finetune/dpo_adapters.npz
 finetune_data.jsonl
 alpaca_data.jsonl
 blog.json
 blog_data.jsonl
 dpo_raw.jsonl
+dpo_with_ref.jsonl
 train.jsonl
 val.jsonl
