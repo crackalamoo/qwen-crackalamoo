@@ -24,6 +24,7 @@ class ChatRequest(BaseModel):
     temperature: float = 0.7
     top_p: float = 0.9
     max_tokens: int = 512
+    repetition_penalty: float = 1.1
     stream: bool = True
 
 
@@ -89,6 +90,7 @@ async def chat_completions(request: ChatRequest):
         max_tokens=request.max_tokens,
         temperature=request.temperature,
         top_p=request.top_p,
+        repetition_penalty=request.repetition_penalty,
     )
     return StreamingResponse(
         stream_sequence(seq, request_id),

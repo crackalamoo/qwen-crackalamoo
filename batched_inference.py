@@ -29,12 +29,31 @@ class Sequence:
     max_tokens: int
     temperature: float
     top_p: float
+    repetition_penalty: float = 1.0
     # scheduler writes token IDs here; None signals completion
     token_queue: "queue.Queue[int | None]" = field(default_factory=queue.Queue)
     generated_ids: list[int] = field(default_factory=list)
     # set by _prefill; merged into batch_cache by _add_to_batch
     cache: "list[KVCache]" = field(default_factory=list)
     last_token: int = -1
+
+
+def apply_repetition_penalty(logits: mx.array, generated_ids: list[int], penalty: float) -> mx.array:
+    """
+    Divide logits by `penalty` for every token that has already appeared.
+    logits: 1-D array of shape [vocab_size]
+    generated_ids: token IDs produced so far for this sequence
+    penalty: > 1.0 discourages repetition (1.0 = no-op)
+    """
+    if penalty == 1.0 or not generated_ids:
+        return logits
+
+    penalty_vec = mx.ones(logits.shape)
+    # set penalty_vec to penalty and indices that have already been generated
+    penalty_vec = penalty_vec.at[mx.array(list(set(generated_ids)))].set(penalty)
+
+    logits = logits / penalty_vec
+    return logits
 
 
 class BatchScheduler:
@@ -105,7 +124,8 @@ class BatchScheduler:
 
         still_alive = []
         for i, seq in enumerate(self.active):
-            next_token = int(sample(logits[i, 0, :], seq.temperature, seq.top_p).item())
+            token_logits = apply_repetition_penalty(logits[i, 0, :], seq.generated_ids, seq.repetition_penalty)
+            next_token = int(sample(token_logits, seq.temperature, seq.top_p).item())
             self.active[i].last_token = next_token
             seq.token_queue.put(next_token)
             seq.generated_ids.append(int(next_token))
@@ -162,6 +182,7 @@ def submit_request(
     max_tokens: int = 512,
     temperature: float = 0.7,
     top_p: float = 0.9,
+    repetition_penalty: float = 1.1,
 ) -> Sequence:
     """Build a Sequence from a chat messages list and submit it to the scheduler."""
     from inference import build_prompt
@@ -171,6 +192,7 @@ def submit_request(
         max_tokens=max_tokens,
         temperature=temperature,
         top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
     scheduler.submit(seq)
     return seq
