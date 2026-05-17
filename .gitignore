@@ -17,5 +17,6 @@ finetune_data.jsonl
 alpaca_data.jsonl
 blog.json
 blog_data.jsonl
+dpo_raw.jsonl
 train.jsonl
 val.jsonl
