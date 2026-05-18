@@ -48,9 +48,9 @@ def apply_repetition_penalty(logits: mx.array, generated_ids: list[int], penalty
     if penalty == 1.0 or not generated_ids:
         return logits
 
-    penalty_vec = mx.ones(logits.shape)
-    # set penalty_vec to penalty and indices that have already been generated
-    penalty_vec = penalty_vec.at[mx.array(list(set(generated_ids)))].set(penalty)
+    unique_ids = mx.array(list(set(generated_ids)))
+    mask = (mx.arange(logits.shape[0])[:, None] == unique_ids[None, :]).any(axis=1)
+    penalty_vec = mx.where(mask, penalty, 1.0)
 
     logits = logits / penalty_vec
     return logits
