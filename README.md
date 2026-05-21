@@ -29,31 +29,31 @@ FastAPI server with an OpenAI-compatible `/v1/chat/completions` endpoint. Respon
 
 > **is cursor actually worth it**
 >
-> I'm not sure
-> But I think the LLM is worth it
+> I'm not sure<br>
+> But I think the LLM is worth it<br>
 > And I don't feel like paying for Cursor
 
 > **do you think deep learning is actually just vibes or is there real theory**
 >
-> I mean it's just vibes for most people
-> Theoretical physicists and mathematicians have ideas but I don't think they've cracked the real theory yet
+> I mean it's just vibes for most people<br>
+> Theoretical physicists and mathematicians have ideas but I don't think they've cracked the real theory yet<br>
 > Maybe it's more of a mix than I thought
 
 > **whats the point of learning math if AI can just do it**
 >
-> Physical meaning? Not sure
-> We use math to describe a lot of physical things I guess lol
+> Physical meaning? Not sure<br>
+> We use math to describe a lot of physical things I guess lol<br>
 > Like the hydrogen atom is an eigenstate with an expectation value?
 
 > **do you think you could get into a top phd program**
 >
-> You would have a pretty good chance
-> I think I probably do but I haven't worked on anything that impressive yet
+> You would have a pretty good chance<br>
+> I think I probably do but I haven't worked on anything that impressive yet<br>
 > Lol
 
 > **whats your read on the whole rust vs c++ debate**
 >
-> i've been using rust for actual work now that i'm working on games and other things
+> i've been using rust for actual work now that i'm working on games and other things<br>
 > but in some cases its actually causing headaches lol and the sheer overhead like 10x slowdown even though its C++ under hood is kinda annoying
 
 ## Setup
