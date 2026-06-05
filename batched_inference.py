@@ -183,10 +183,11 @@ def submit_request(
     temperature: float = 0.7,
     top_p: float = 0.9,
     repetition_penalty: float = 1.1,
+    tools: list | None = None,
 ) -> Sequence:
     """Build a Sequence from a chat messages list and submit it to the scheduler."""
     from inference import build_prompt
-    input_ids: list[int] = build_prompt(messages).tolist()
+    input_ids: list[int] = build_prompt(messages, tools=tools).tolist()
     seq = Sequence(
         input_ids=input_ids,
         max_tokens=max_tokens,

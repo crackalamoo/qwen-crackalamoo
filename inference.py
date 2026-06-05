@@ -18,13 +18,11 @@ if _adapter_path:
     print(f"Loaded adapter: {_adapter_path}")
 
 
-def build_prompt(messages: list[dict]) -> mx.array:
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False,
-    )
+def build_prompt(messages: list[dict], tools: list | None = None) -> mx.array:
+    kwargs = dict(tokenize=False, add_generation_prompt=True, enable_thinking=False)
+    if tools is not None:
+        kwargs["tools"] = tools
+    text = tokenizer.apply_chat_template(messages, **kwargs)
     tokens = tokenizer.encode(text)
     return mx.array(tokens)
 
