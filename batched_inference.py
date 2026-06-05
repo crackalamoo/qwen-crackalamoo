@@ -19,6 +19,8 @@ from mlx_lm.models.cache import KVCache, make_prompt_cache
 
 from inference import model, tokenizer, sample
 
+from prefix_cache import cache, slice_kv_cache
+
 MAX_BATCH = 8
 EOS_TOKEN_ID = tokenizer.eos_token_id
 
@@ -73,9 +75,19 @@ class BatchScheduler:
         Populates seq.cache (per-layer KVCache) and samples the first generated
         token. Returns False if the sequence is already done (EOS or max_tokens).
         """
-        seq.cache = make_prompt_cache(model)
-        logits = model(mx.array(seq.input_ids)[None], cache=seq.cache)
+        kv_from_cache, n_cached_tokens = cache.lookup(seq.input_ids)
+        if kv_from_cache and n_cached_tokens >= len(seq.input_ids):
+            seq.cache = slice_kv_cache(kv_from_cache, len(seq.input_ids) - 1)
+            suffix = [seq.input_ids[-1]]
+        elif kv_from_cache and n_cached_tokens < len(seq.input_ids):
+            seq.cache = kv_from_cache
+            suffix = seq.input_ids[n_cached_tokens:]
+        else:
+            seq.cache = make_prompt_cache(model)
+            suffix = seq.input_ids
+        logits = model(mx.array(suffix)[None], cache=seq.cache)
         mx.eval(logits)
+        cache.insert(seq.input_ids, seq.cache)
         first_token = int(sample(logits[0, -1, :], seq.temperature, seq.top_p).item())
         seq.last_token = first_token
         seq.generated_ids.append(first_token)
