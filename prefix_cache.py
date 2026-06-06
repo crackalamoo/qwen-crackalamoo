@@ -28,9 +28,10 @@ def _copy_kv_cache(cache: list[KVCache]) -> list[KVCache]:
         if layer.keys is not None:
             new_layer.keys = mx.array(layer.keys[..., :layer.offset, :])
             new_layer.values = mx.array(layer.values[..., :layer.offset, :])
-            mx.eval(new_layer.keys, new_layer.values)
         new_layer.offset = layer.offset
         copies.append(new_layer)
+    mx.eval(*[l.keys for l in copies if l.keys is not None],
+            *[l.values for l in copies if l.values is not None])
     return copies
 
 
@@ -42,9 +43,10 @@ def slice_kv_cache(cache: list[KVCache], n_tokens: int) -> list[KVCache]:
         if layer.keys is not None:
             new_layer.keys = mx.array(layer.keys[..., :n_tokens, :])
             new_layer.values = mx.array(layer.values[..., :n_tokens, :])
-            mx.eval(new_layer.keys, new_layer.values)
         new_layer.offset = n_tokens
         copies.append(new_layer)
+    mx.eval(*[l.keys for l in copies if l.keys is not None],
+            *[l.values for l in copies if l.values is not None])
     return copies
 
 
