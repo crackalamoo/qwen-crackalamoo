@@ -175,6 +175,22 @@ class BatchScheduler:
             # batched generation step
             alive_flags = self._generation_step()
 
+            # store finished sequences in prefix cache before removing them
+            finished = [i for i, alive in enumerate(alive_flags) if not alive]
+            if self._batch_cache is not None:
+                for i in finished:
+                    seq = self.active[i]
+                    full_tokens = seq.input_ids + seq.generated_ids
+                    extracted_kv_cache = []
+                    for layer in self._batch_cache:
+                        new_layer = KVCache()
+                        new_layer.keys = layer.keys[i:i+1, :, :layer._idx, :]
+                        new_layer.values = layer.values[i:i+1, :, :layer._idx, :]
+                        new_layer.offset = int(layer.offset[i].item())
+                        extracted_kv_cache.append(new_layer)
+                    cache.insert(full_tokens, extracted_kv_cache)
+
+
             # remove finished sequences
             keep = [i for i, alive in enumerate(alive_flags) if alive]
             self.active = [self.active[i] for i in keep]
