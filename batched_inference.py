@@ -38,6 +38,7 @@ class Sequence:
     # set by _prefill; merged into batch_cache by _add_to_batch
     cache: "list[KVCache]" = field(default_factory=list)
     last_token: int = -1
+    n_cached_tokens: int = 0  # prompt tokens served from prefix cache
 
 
 def apply_repetition_penalty(logits: mx.array, generated_ids: list[int], penalty: float) -> mx.array:
@@ -85,6 +86,7 @@ class BatchScheduler:
         else:
             seq.cache = make_prompt_cache(model)
             suffix = seq.input_ids
+        seq.n_cached_tokens = n_cached_tokens
         logits = model(mx.array(suffix)[None], cache=seq.cache)
         mx.eval(logits)
         cache.insert(seq.input_ids, seq.cache)

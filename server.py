@@ -19,6 +19,10 @@ class Message(BaseModel):
     content: str | None = None
 
 
+class StreamOptions(BaseModel):
+    include_usage: bool = False
+
+
 class ChatRequest(BaseModel):
     model: str = "qwen3-8b"
     messages: list[Message]
@@ -28,9 +32,10 @@ class ChatRequest(BaseModel):
     repetition_penalty: float = 1.1
     stream: bool = True
     tools: list | None = None
+    stream_options: StreamOptions | None = None
 
 
-def make_chunk(content: str, request_id: str) -> str:
+def make_chunk(content: str, request_id: str, include_usage: bool = False) -> str:
     payload = {
         "id": request_id,
         "object": "chat.completion.chunk",
@@ -38,18 +43,45 @@ def make_chunk(content: str, request_id: str) -> str:
         "model": "qwen3-8b",
         "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
     }
+    if include_usage:
+        payload["usage"] = None
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def make_done_chunk(request_id: str) -> str:
+def make_done_chunk(request_id: str, finish_reason: str = "stop", include_usage: bool = False) -> str:
     payload = {
         "id": request_id,
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": "qwen3-8b",
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+    }
+    if include_usage:
+        payload["usage"] = None
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def make_usage_chunk(request_id: str, usage: dict) -> str:
+    payload = {
+        "id": request_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": "qwen3-8b",
+        "choices": [],
+        "usage": usage,
     }
     return f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n"
+
+
+def build_usage(seq: Sequence, completion_tokens: int) -> dict:
+    prompt_tokens = len(seq.input_ids)
+    cached_tokens = seq.n_cached_tokens
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "prompt_tokens_details": {"cached_tokens": cached_tokens},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +197,7 @@ class TagStateMachine:
 # Stream generators
 # ---------------------------------------------------------------------------
 
-def stream_sequence_with_tools(seq: Sequence, request_id: str):
+def stream_sequence_with_tools(seq: Sequence, request_id: str, include_usage: bool = False):
     """Real-time streaming with tag state machine — handles tool_call and think tags."""
     local_ids: list[int] = []
     decoded_so_far = ""
@@ -186,7 +218,7 @@ def stream_sequence_with_tools(seq: Sequence, request_id: str):
             for kind, value in parser.feed(delta):
                 if kind == "text":
                     assert isinstance(value, str)
-                    yield make_chunk(value, request_id)
+                    yield make_chunk(value, request_id, include_usage=include_usage)
                 elif kind == "tool_call":
                     assert isinstance(value, dict)
                     tool_calls.append(value)
@@ -195,7 +227,7 @@ def stream_sequence_with_tools(seq: Sequence, request_id: str):
     for kind, value in parser.flush():
         if kind == "text":
             assert isinstance(value, str)
-            yield make_chunk(value, request_id)
+            yield make_chunk(value, request_id, include_usage=include_usage)
         elif kind == "tool_call":
             assert isinstance(value, dict)
             tool_calls.append(value)
@@ -225,19 +257,15 @@ def stream_sequence_with_tools(seq: Sequence, request_id: str):
                 }, "finish_reason": None}],
             }
             yield f"data: {json.dumps(args_chunk)}\n\n"
-        done_chunk = {
-            "id": request_id,
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": "qwen3-8b",
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
-        }
-        yield f"data: {json.dumps(done_chunk)}\n\ndata: [DONE]\n\n"
+        yield make_done_chunk(request_id, finish_reason="tool_calls", include_usage=include_usage)
     else:
-        yield make_done_chunk(request_id)
+        yield make_done_chunk(request_id, finish_reason="stop", include_usage=include_usage)
+
+    if include_usage:
+        yield make_usage_chunk(request_id, build_usage(seq, len(local_ids)))
 
 
-def stream_sequence(seq: Sequence, request_id: str):
+def stream_sequence(seq: Sequence, request_id: str, include_usage: bool = False):
     """
     Sync generator: blocks on seq.token_queue.get() until tokens arrive.
     FastAPI runs this via iterate_in_threadpool so it doesn't stall the event loop.
@@ -254,8 +282,10 @@ def stream_sequence(seq: Sequence, request_id: str):
             for kind, value in parser.flush():
                 if kind == "text":
                     assert isinstance(value, str)
-                    yield make_chunk(value, request_id)
-            yield make_done_chunk(request_id)
+                    yield make_chunk(value, request_id, include_usage=include_usage)
+            yield make_done_chunk(request_id, finish_reason="stop", include_usage=include_usage)
+            if include_usage:
+                yield make_usage_chunk(request_id, build_usage(seq, len(local_ids)))
             break
         local_ids.append(token_id)
         new_text = seq_decode(local_ids)
@@ -266,7 +296,7 @@ def stream_sequence(seq: Sequence, request_id: str):
             for kind, value in parser.feed(delta):
                 if kind == "text":
                     assert isinstance(value, str)
-                    yield make_chunk(value, request_id)
+                    yield make_chunk(value, request_id, include_usage=include_usage)
                 # tool_call events won't occur since <tool_call> is not in enabled_tags
 
 
@@ -292,10 +322,11 @@ async def chat_completions(request: ChatRequest):
         repetition_penalty=request.repetition_penalty,
         tools=request.tools,
     )
+    include_usage = bool(request.stream_options and request.stream_options.include_usage)
     generator = (
-        stream_sequence_with_tools(seq, request_id)
+        stream_sequence_with_tools(seq, request_id, include_usage=include_usage)
         if request.tools
-        else stream_sequence(seq, request_id)
+        else stream_sequence(seq, request_id, include_usage=include_usage)
     )
     return StreamingResponse(
         generator,
