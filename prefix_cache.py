@@ -161,7 +161,7 @@ class RadixCache:
                         node_2,
                         child.kv_cache,
                         child.children,
-                        time.time()
+                        child.last_access  # preserve old node's access time so LRU evicts stale branch first
                     )
                     children = {
                             node_1[0]: child_1,
@@ -194,17 +194,17 @@ class RadixCache:
             self._evict_leaf(leaf)
 
     def _find_lru_leaf(self, node: RadixNode) -> Optional["RadixNode"]:
-        """Return the leaf node with the oldest last_access time."""
-        if not node.children:
-            return node if node.kv_cache is not None else None
-        candidates = [self._find_lru_leaf(child) for child in node.children.values()]
-        candidates = [c for c in candidates if c is not None]
-        if not candidates:
-            return None
-        return min(candidates, key=lambda n: n.last_access)
+        """Return the node with the oldest last_access and kv_cache != None."""
+        best = node if node.kv_cache is not None else None
+        for child in node.children.values():
+            candidate = self._find_lru_leaf(child)
+            if candidate is not None:
+                if best is None or candidate.last_access < best.last_access:
+                    best = candidate
+        return best
 
     def _evict_leaf(self, leaf: RadixNode) -> None:
-        """Remove a leaf node's KV cache and update token count."""
+        """Remove a node's KV cache and update token count."""
         if leaf.kv_cache is not None:
             self._total_cached_tokens -= leaf.token_count()
             leaf.kv_cache = None
@@ -212,3 +212,4 @@ class RadixCache:
 
 # module-level singleton
 cache = RadixCache()
+
