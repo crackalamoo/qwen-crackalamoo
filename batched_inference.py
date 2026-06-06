@@ -180,6 +180,10 @@ class BatchScheduler:
             if self._batch_cache is not None:
                 for i in finished:
                     seq = self.active[i]
+                    generated_text = tokenizer.decode(seq.generated_ids, skip_special_tokens=True)
+                    if "</think>" in generated_text:
+                        # KV state includes think tokens not persisted — invalid cache key for future turns
+                        continue  
                     full_tokens = seq.input_ids + seq.generated_ids
                     extracted_kv_cache = []
                     for layer in self._batch_cache:
