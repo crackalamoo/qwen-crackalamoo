@@ -185,6 +185,12 @@ class RadixCache:
 
             _insert_into(self._root)
 
+        # Each finished generation frees its BatchKVCache into
+        # MLX's cache pool, where it sits useless since the next request's KV
+        # shapes differ. Clear cache outside the lock so the next
+        # lookup() calls can start without waiting for cache clear.
+        mx.clear_cache()
+
     def _maybe_evict(self) -> None:
         """Evict LRU leaves until _total_cached_tokens <= MAX_CACHE_TOKENS."""
         while self._total_cached_tokens > MAX_CACHE_TOKENS:

@@ -64,6 +64,7 @@ class BatchScheduler:
         self.pending: queue.Queue[Sequence] = queue.Queue()
         self.active: list[Sequence] = []
         self._batch_cache = None  # BatchKVCache | None
+        self._tick = 0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -201,10 +202,18 @@ class BatchScheduler:
             keep = [i for i, alive in enumerate(alive_flags) if alive]
             self.active = [self.active[i] for i in keep]
             if keep:
+                # partial filter()
                 for layer in self._batch_cache:
                     layer.filter(keep)
             else:
                 self._batch_cache = None
+
+            # Cheap safety net: a partial filter() (one sequence in a batch
+            # finishing early while others continue) can dump freed
+            # buffers into the cache. Clear them here
+            self._tick += 1
+            if self._tick % 100 == 0:
+                mx.clear_cache()
 
 
 # module-level singleton — imported by server.py
