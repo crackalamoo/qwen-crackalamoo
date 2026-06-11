@@ -33,6 +33,25 @@ class ChatRequest(BaseModel):
     stream: bool = True
     tools: list | None = None
     stream_options: StreamOptions | None = None
+    reasoning_effort: str = "minimal"  # minimal | low | medium | high
+
+
+# minimal = thinking disabled entirely (no <think> tokens at all).
+# low/medium/high = thinking enabled, hard-capped via forced "</think>" injection.
+_THINKING_BUDGETS: dict[str, int | None] = {
+    "low": 256,
+    "medium": 512,
+    "high": 1024,
+}
+
+
+def resolve_thinking(reasoning_effort: str) -> tuple[bool, int | None]:
+    """Map a reasoning_effort level to (enable_thinking, thinking_budget)."""
+    if reasoning_effort == "minimal":
+        return False, None
+    if reasoning_effort not in _THINKING_BUDGETS:
+        raise ValueError(f"invalid reasoning_effort: {reasoning_effort!r}")
+    return True, _THINKING_BUDGETS[reasoning_effort]
 
 
 def make_chunk(content: str, request_id: str, include_usage: bool = False) -> str:
@@ -314,6 +333,7 @@ async def chat_ui():
 async def chat_completions(request: ChatRequest):
     request_id = str(uuid.uuid4())
     messages = [m.model_dump(exclude_none=True) for m in request.messages]
+    enable_thinking, thinking_budget = resolve_thinking(request.reasoning_effort)
     seq = submit_request(
         messages,
         max_tokens=request.max_completion_tokens,
@@ -321,6 +341,8 @@ async def chat_completions(request: ChatRequest):
         top_p=request.top_p,
         repetition_penalty=request.repetition_penalty,
         tools=request.tools,
+        enable_thinking=enable_thinking,
+        thinking_budget=thinking_budget,
     )
     include_usage = bool(request.stream_options and request.stream_options.include_usage)
     generator = (
@@ -333,3 +355,4 @@ async def chat_completions(request: ChatRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+

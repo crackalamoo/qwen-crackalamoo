@@ -24,6 +24,12 @@ from prefix_cache import cache, slice_kv_cache
 MAX_BATCH = 8
 EOS_TOKEN_ID = tokenizer.eos_token_id
 
+# Both <think> and </think> are single tokens in the Qwen3 vocab
+THINK_TOKEN_ID = 151667
+THINK_END_TOKEN_ID = 151668
+# "</think>\n\n" — what we inject via forced_tokens to force-close thinking
+THINK_END_TOKENS = [THINK_END_TOKEN_ID, 271]
+
 
 @dataclass
 class Sequence:
@@ -39,6 +45,29 @@ class Sequence:
     cache: "list[KVCache]" = field(default_factory=list)
     last_token: int = -1
     n_cached_tokens: int = 0  # prompt tokens served from prefix cache
+    # queued token IDs to emit instead of sampling (e.g. forced "</think>" closer)
+    forced_tokens: list[int] = field(default_factory=list)
+    # hard cap on tokens generated inside <think>...</think>; None = unlimited
+    thinking_budget: int | None = None
+    think_tokens: int = 0  # tokens generated since <think> was seen
+    in_think: bool = False  # currently inside a <think>...</think> block
+
+
+def track_thinking(seq: "Sequence", next_token: int) -> None:
+    """
+    Update thinking token counter based on the next_token
+    and enforce seq.thinking_budget by setting seq.forced_tokens
+    once the thinking token budget is reached
+    """
+    if next_token == THINK_TOKEN_ID:
+        seq.in_think = True
+    elif next_token == THINK_END_TOKEN_ID:
+        seq.in_think = False
+    elif seq.in_think:
+        seq.think_tokens += 1
+        if seq.thinking_budget is not None and seq.think_tokens >= seq.thinking_budget and not seq.forced_tokens:
+            # force close thinking on the next tick
+            seq.forced_tokens = list(THINK_END_TOKENS)
 
 
 def apply_repetition_penalty(logits: mx.array, generated_ids: list[int], penalty: float) -> mx.array:
@@ -92,6 +121,7 @@ class BatchScheduler:
         mx.eval(logits)
         cache.insert(seq.input_ids, seq.cache)
         first_token = int(sample(logits[0, -1, :], seq.temperature, seq.top_p).item())
+        track_thinking(seq, first_token)
         seq.last_token = first_token
         seq.generated_ids.append(first_token)
         seq.token_queue.put(first_token)
@@ -134,16 +164,27 @@ class BatchScheduler:
         """
         tokens = mx.array([[int(a.last_token)] for a in self.active])
 
+        # model call also updates cache; `logits` itself is unused in the forced_tokens case
         logits = model(tokens, cache=self._batch_cache)
         mx.eval(logits)
 
         still_alive = []
         for i, seq in enumerate(self.active):
-            token_logits = apply_repetition_penalty(logits[i, 0, :], seq.generated_ids, seq.repetition_penalty)
-            next_token = int(sample(token_logits, seq.temperature, seq.top_p).item())
+            # if seq.forced_tokens is non-empty, pop and use the front
+            # token instead of sampling (still goes through the
+            # path below, but bypasses logits sampling entirely).
+            if seq.forced_tokens:
+                next_token = seq.forced_tokens[0]
+                seq.forced_tokens = seq.forced_tokens[1:]
+            else:
+                token_logits = apply_repetition_penalty(logits[i, 0, :], seq.generated_ids, seq.repetition_penalty)
+                next_token = int(sample(token_logits, seq.temperature, seq.top_p).item())
+
+            track_thinking(seq, next_token)
+
             self.active[i].last_token = next_token
             seq.token_queue.put(next_token)
-            seq.generated_ids.append(int(next_token))
+            seq.generated_ids.append(next_token)
             if len(seq.generated_ids) >= seq.max_tokens or next_token == EOS_TOKEN_ID:
                 seq.token_queue.put(None)
                 still_alive.append(False)
@@ -185,8 +226,10 @@ class BatchScheduler:
                     seq = self.active[i]
                     generated_text = tokenizer.decode(seq.generated_ids, skip_special_tokens=True)
                     if "</think>" in generated_text:
-                        # KV state includes think tokens not persisted — invalid cache key for future turns
-                        continue  
+                        # future turns strip <think> blocks from history, so
+                        # the finished sequence would never be looked up again.
+                        # skip to avoid wasting cache memory
+                        continue
                     full_tokens = seq.input_ids + seq.generated_ids
                     extracted_kv_cache = []
                     for layer in self._batch_cache:
@@ -227,16 +270,19 @@ def submit_request(
     top_p: float = 0.9,
     repetition_penalty: float = 1.1,
     tools: list | None = None,
+    enable_thinking: bool = False,
+    thinking_budget: int | None = None,
 ) -> Sequence:
     """Build a Sequence from a chat messages list and submit it to the scheduler."""
     from inference import build_prompt
-    input_ids: list[int] = build_prompt(messages, tools=tools).tolist()
+    input_ids: list[int] = build_prompt(messages, tools=tools, enable_thinking=enable_thinking).tolist()
     seq = Sequence(
         input_ids=input_ids,
         max_tokens=max_tokens,
         temperature=temperature,
         top_p=top_p,
         repetition_penalty=repetition_penalty,
+        thinking_budget=thinking_budget,
     )
     scheduler.submit(seq)
     return seq
