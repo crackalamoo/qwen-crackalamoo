@@ -28,7 +28,7 @@ class ChatRequest(BaseModel):
     messages: list[Message]
     temperature: float = 0.7
     top_p: float = 0.9
-    max_tokens: int = 512
+    max_completion_tokens: int = 512
     repetition_penalty: float = 1.1
     stream: bool = True
     tools: list | None = None
@@ -316,7 +316,7 @@ async def chat_completions(request: ChatRequest):
     messages = [m.model_dump(exclude_none=True) for m in request.messages]
     seq = submit_request(
         messages,
-        max_tokens=request.max_tokens,
+        max_tokens=request.max_completion_tokens,
         temperature=request.temperature,
         top_p=request.top_p,
         repetition_penalty=request.repetition_penalty,

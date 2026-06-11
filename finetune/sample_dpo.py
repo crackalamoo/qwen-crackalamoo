@@ -81,7 +81,7 @@ def query(prompt: str) -> str:
     payload = json.dumps({
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "max_tokens": 200,
+        "max_completion_tokens": 200,
         "temperature": 0.7,
     }).encode()
     req = urllib.request.Request(SERVER, data=payload, headers={"Content-Type": "application/json"})
