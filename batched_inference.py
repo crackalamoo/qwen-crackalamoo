@@ -70,6 +70,20 @@ def track_thinking(seq: "Sequence", next_token: int) -> None:
             seq.forced_tokens = list(THINK_END_TOKENS)
 
 
+def prefill_last_token_logits(suffix: list[int], layer_cache: "list[KVCache]") -> mx.array:
+    """
+    Runs the prompt suffix through the model, updating layer_cache in place,
+    and returns logits for ONLY the final token position: shape [vocab_size].
+    """
+    # forward pass of the full suffix using the existing prefix cache, excluding lm_head
+    hidden = model.model(mx.array(suffix)[None], cache=layer_cache)
+    # hidden: [1, L, 4096]
+    last_hidden = hidden[:, -1:, :]
+    last_logits = model.lm_head(last_hidden) # [1, 1, 151936]
+    last_logits = last_logits[0, 0, :]
+    return last_logits
+
+
 def apply_repetition_penalty(logits: mx.array, generated_ids: list[int], penalty: float) -> mx.array:
     """
     Divide logits by `penalty` for every token that has already appeared.
@@ -117,10 +131,10 @@ class BatchScheduler:
             seq.cache = make_prompt_cache(model)
             suffix = seq.input_ids
         seq.n_cached_tokens = n_cached_tokens
-        logits = model(mx.array(suffix)[None], cache=seq.cache)
-        mx.eval(logits)
+        last_logits = prefill_last_token_logits(suffix, seq.cache)
+        mx.eval(last_logits)
         cache.insert(seq.input_ids, seq.cache)
-        first_token = int(sample(logits[0, -1, :], seq.temperature, seq.top_p).item())
+        first_token = int(sample(last_logits, seq.temperature, seq.top_p).item())
         track_thinking(seq, first_token)
         seq.last_token = first_token
         seq.generated_ids.append(first_token)
