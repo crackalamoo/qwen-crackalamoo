@@ -138,9 +138,23 @@ class TagStateMachine:
         self._candidates: list[str] = []  # remaining candidate tags in MAYBE_TAG
 
     def feed(self, delta: str):
-        """Feed a text delta; yield zero or more events."""
+        """Feed a text delta; yield zero or more events.
+
+        Accumulates consecutive ("text", ch) results from
+        self._process_char(ch) into a single string.
+        """
+        text = ""
         for ch in delta:
-            yield from self._process_char(ch)
+            for event in self._process_char(ch):
+                if event and event[0] == "text":
+                    text += event[1]
+                else:
+                    if text:
+                        yield ("text", text)
+                        text = ""
+                    yield event
+        if text:
+            yield ("text", text)
 
     def flush(self):
         """Signal end-of-stream; yield any remaining buffered events."""
