@@ -14,46 +14,46 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import mlx.core as mx
-from mlx_lm.models.cache import KVCache
+from mlx.utils import tree_map
+from mlx_lm.models.cache import QuantizedKVCache
 
 
 MAX_CACHE_TOKENS = 16384  # ~2.3GB KV headroom
 
 
-def _copy_kv_cache(cache: list[KVCache]) -> list[KVCache]:
-    """Deep-copy a list of KVCache objects so the caller can mutate without corrupting the stored snapshot."""
-    copies = []
-    for layer in cache:
-        new_layer = KVCache()
-        if layer.keys is not None:
-            new_layer.keys = mx.array(layer.keys[..., :layer.offset, :])
-            new_layer.values = mx.array(layer.values[..., :layer.offset, :])
-        new_layer.offset = layer.offset
-        copies.append(new_layer)
-    mx.eval(*[l.keys for l in copies if l.keys is not None],
-            *[l.values for l in copies if l.values is not None])
+def _copy_quantized_layer(layer: QuantizedKVCache, n_tokens: int) -> QuantizedKVCache:
+    """Copy one QuantizedKVCache layer, truncated to its first n_tokens."""
+    new_layer = QuantizedKVCache(group_size=layer.group_size, bits=layer.bits)
+    if layer.keys is not None:
+        new_layer.keys, new_layer.values = tree_map(
+            lambda x: mx.array(x[..., :n_tokens, :]), (layer.keys, layer.values)
+        )
+    new_layer.offset = n_tokens
+    return new_layer
+
+
+def _eval_kv_cache(cache: list[QuantizedKVCache]) -> None:
+    mx.eval(*[a for l in cache if l.keys is not None for a in (*l.keys, *l.values)])
+
+
+def _copy_kv_cache(cache: list[QuantizedKVCache]) -> list[QuantizedKVCache]:
+    """Deep-copy a list of QuantizedKVCache objects so the caller can mutate without corrupting the stored snapshot."""
+    copies = [_copy_quantized_layer(layer, layer.offset) for layer in cache]
+    _eval_kv_cache(copies)
     return copies
 
 
-def slice_kv_cache(cache: list[KVCache], n_tokens: int) -> list[KVCache]:
+def slice_kv_cache(cache: list[QuantizedKVCache], n_tokens: int) -> list[QuantizedKVCache]:
     """Return a copy of cache truncated to the first n_tokens."""
-    copies = []
-    for layer in cache:
-        new_layer = KVCache()
-        if layer.keys is not None:
-            new_layer.keys = mx.array(layer.keys[..., :n_tokens, :])
-            new_layer.values = mx.array(layer.values[..., :n_tokens, :])
-        new_layer.offset = n_tokens
-        copies.append(new_layer)
-    mx.eval(*[l.keys for l in copies if l.keys is not None],
-            *[l.values for l in copies if l.values is not None])
+    copies = [_copy_quantized_layer(layer, n_tokens) for layer in cache]
+    _eval_kv_cache(copies)
     return copies
 
 
 @dataclass
 class RadixNode:
     tokens: list[int]
-    kv_cache: Optional[list[KVCache]] = None
+    kv_cache: Optional[list[QuantizedKVCache]] = None
     children: dict[int, "RadixNode"] = field(default_factory=dict)
     last_access: float = field(default_factory=time.monotonic)
 
@@ -75,7 +75,7 @@ class RadixCache:
         self._lock = threading.Lock()
         self._total_cached_tokens = 0
 
-    def lookup(self, tokens: list[int]) -> tuple[Optional[list[KVCache]], int]:
+    def lookup(self, tokens: list[int]) -> tuple[Optional[list[QuantizedKVCache]], int]:
         """
         Find the longest cached prefix of `tokens`.
 
@@ -112,15 +112,14 @@ class RadixCache:
                     break
             return (best_cache, best_depth)
 
-    def insert(self, tokens: list[int], kv_cache: list[KVCache]) -> None:
+    def insert(self, tokens: list[int], kv_cache: list[QuantizedKVCache]) -> None:
         """
         Insert a (tokens, kv_cache) entry into the tree.
         """
         if kv_cache and kv_cache[0].offset > MAX_CACHE_TOKENS:
             return
         with self._lock:
-            mx.eval(*[layer.keys for layer in kv_cache if layer.keys is not None],
-                    *[layer.values for layer in kv_cache if layer.values is not None])
+            _eval_kv_cache(kv_cache)
 
             def _insert_into(node, depth=0):
                 child = node.children.get(tokens[depth], None)

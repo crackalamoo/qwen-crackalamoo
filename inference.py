@@ -1,3 +1,5 @@
+import mlx_patches  # noqa: F401 -- must run before any quantized batched forward pass
+
 import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import make_prompt_cache

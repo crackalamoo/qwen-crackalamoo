@@ -2,12 +2,12 @@
 Continuous batching scheduler.
 
 Multiple requests share a single generation loop. Each request is prefilled
-individually, then its KV cache is merged into a shared BatchKVCache. Every
-scheduler tick runs one batched forward pass over all active sequences.
+individually, then its KV cache is merged into a shared BatchQuantizedKVCache.
+Every scheduler tick runs one batched forward pass over all active sequences.
 
-Memory budget: Qwen3-8B-4bit ~4GB weights + ~144KB/token KV.
-At MAX_BATCH=8, max_tokens=512 → ~590MB KV headroom on 16GB. Don't raise
-MAX_BATCH without checking memory first.
+Memory budget: Qwen3-8B-4bit ~4GB weights + ~144KB/token KV in bf16, roughly
+halved by the 8-bit KV cache. At MAX_BATCH=8, max_tokens=512 → ~590MB KV
+headroom (bf16 estimate) on 16GB.
 """
 
 import queue
@@ -15,10 +15,11 @@ import threading
 from dataclasses import dataclass, field
 
 import mlx.core as mx
-from mlx_lm.models.cache import KVCache, make_prompt_cache
+from mlx_lm.models.cache import KVCache, QuantizedKVCache, make_prompt_cache
 
 from inference import model, tokenizer, sample
 
+from batch_quantized_cache import BatchQuantizedKVCache, KV_GROUP_SIZE, KV_BITS
 from prefix_cache import cache, slice_kv_cache
 
 MAX_BATCH = 8
@@ -42,7 +43,7 @@ class Sequence:
     token_queue: "queue.Queue[int | None]" = field(default_factory=queue.Queue)
     generated_ids: list[int] = field(default_factory=list)
     # set by _prefill; merged into batch_cache by _add_to_batch
-    cache: "list[KVCache]" = field(default_factory=list)
+    cache: "list[QuantizedKVCache]" = field(default_factory=list)
     last_token: int = -1
     n_cached_tokens: int = 0  # prompt tokens served from prefix cache
     # queued token IDs to emit instead of sampling (e.g. forced "</think>" closer)
@@ -70,7 +71,7 @@ def track_thinking(seq: "Sequence", next_token: int) -> None:
             seq.forced_tokens = list(THINK_END_TOKENS)
 
 
-def prefill_last_token_logits(suffix: list[int], layer_cache: "list[KVCache]") -> mx.array:
+def prefill_last_token_logits(suffix: list[int], layer_cache: "list[KVCache] | list[QuantizedKVCache]") -> mx.array:
     """
     Runs the prompt suffix through the model, updating layer_cache in place,
     and returns logits for ONLY the final token position: shape [vocab_size].
@@ -106,7 +107,7 @@ class BatchScheduler:
     def __init__(self):
         self.pending: queue.Queue[Sequence] = queue.Queue()
         self.active: list[Sequence] = []
-        self._batch_cache = None  # BatchKVCache | None
+        self._batch_cache = None  # list[BatchQuantizedKVCache] | None
         self._tick = 0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -117,8 +118,9 @@ class BatchScheduler:
     def _prefill(self, seq: Sequence) -> bool:
         """
         Full prompt forward pass for one sequence.
-        Populates seq.cache (per-layer KVCache) and samples the first generated
-        token. Returns False if the sequence is already done (EOS or max_tokens).
+        Populates seq.cache (per-layer QuantizedKVCache) and samples the first
+        generated token. Returns False if the sequence is already done (EOS or
+        max_tokens).
         """
         kv_from_cache, n_cached_tokens = cache.lookup(seq.input_ids)
         if kv_from_cache and n_cached_tokens >= len(seq.input_ids):
@@ -132,6 +134,11 @@ class BatchScheduler:
             suffix = seq.input_ids
         seq.n_cached_tokens = n_cached_tokens
         last_logits = prefill_last_token_logits(suffix, seq.cache)
+        if not isinstance(seq.cache[0], QuantizedKVCache):
+            seq.cache = [
+                layer.to_quantized(group_size=KV_GROUP_SIZE, bits=KV_BITS)
+                for layer in seq.cache
+            ]
         mx.eval(last_logits)
         cache.insert(seq.input_ids, seq.cache)
         first_token = int(sample(last_logits, seq.temperature, seq.top_p).item())
@@ -146,19 +153,20 @@ class BatchScheduler:
 
     def _add_to_batch(self, seq: Sequence) -> None:
         """
-        Merge a prefilled sequence's per-layer KVCache into the running batch.
+        Merge a prefilled sequence's per-layer QuantizedKVCache into the running batch.
 
-        _batch_cache is list[BatchKVCache] — one BatchKVCache per model layer.
-        Each BatchKVCache holds the KV entries for ALL active sequences at that layer,
-        left-padded so every sequence's last token is right-aligned.
+        _batch_cache is list[BatchQuantizedKVCache] — one BatchQuantizedKVCache per
+        model layer. Each BatchQuantizedKVCache holds the KV entries for ALL active
+        sequences at that layer, left-padded so every sequence's last token is
+        right-aligned.
         """
         if self._batch_cache is None:
-            # wrap each layer's single KVCache into a batch of size 1
-            self._batch_cache = [KVCache.merge([layer]) for layer in seq.cache]
+            # wrap each layer's single QuantizedKVCache into a batch of size 1
+            self._batch_cache = [BatchQuantizedKVCache.merge([layer]) for layer in seq.cache]
         else:
-            # extend each layer's BatchKVCache with the new sequence
+            # extend each layer's BatchQuantizedKVCache with the new sequence
             for batch_layer, seq_layer in zip(self._batch_cache, seq.cache):
-                batch_layer.extend(KVCache.merge([seq_layer]))
+                batch_layer.extend(BatchQuantizedKVCache.merge([seq_layer]))
         self.active.append(seq)
 
     def _generation_step(self) -> list[bool]:
@@ -245,13 +253,7 @@ class BatchScheduler:
                         # skip to avoid wasting cache memory
                         continue
                     full_tokens = seq.input_ids + seq.generated_ids
-                    extracted_kv_cache = []
-                    for layer in self._batch_cache:
-                        new_layer = KVCache()
-                        new_layer.keys = layer.keys[i:i+1, :, :layer._idx, :]
-                        new_layer.values = layer.values[i:i+1, :, :layer._idx, :]
-                        new_layer.offset = int(layer.offset[i].item())
-                        extracted_kv_cache.append(new_layer)
+                    extracted_kv_cache = [layer.extract(i) for layer in self._batch_cache]
                     cache.insert(full_tokens, extracted_kv_cache)
 
 

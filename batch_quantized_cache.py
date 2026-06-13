@@ -4,11 +4,11 @@ BatchQuantizedKVCache -- batched, 8-bit-quantized KV cache for continuous batchi
 Scope: Qwen3 only (dense GQA, plain causal attention, no sliding window / no
 MLA). DeepSeek-style MLA caches (k_pe) are out of scope.
 
-Dependency: requires a 2-line patch to quantized_scaled_dot_product_attention
-in mlx_lm/models/base.py (applied locally to .venv site-packages -- reapply
-if the venv is rebuilt) that expands the mask to 5D for GQA. Without it,
-batched quantized attention with n_repeats > 1 either errors or silently
-misaligns masks across batch rows.
+Dependency: requires the GQA mask-broadcast fix to
+quantized_scaled_dot_product_attention applied by mlx_patches.py (monkeypatches
+mlx_lm.models.base at import time -- import it before touching the model,
+see inference.py). Without it, batched quantized attention with n_repeats > 1
+either errors or silently misaligns masks across batch rows.
 """
 
 import mlx.core as mx
@@ -16,11 +16,17 @@ from mlx_lm.models.base import create_causal_mask
 from mlx.utils import tree_map
 from mlx_lm.models.cache import QuantizedKVCache, _BaseCache
 
+# Quantization settings shared with batched_inference.py / prefix_cache.py --
+# every per-sequence QuantizedKVCache must use these so merge()/extend() (which
+# require matching group_size/bits across caches) never hit a mismatch.
+KV_GROUP_SIZE = 64
+KV_BITS = 8
+
 
 class BatchQuantizedKVCache(_BaseCache):
     step = 256
 
-    def __init__(self, left_padding: list[int], group_size: int = 64, bits: int = 8):
+    def __init__(self, left_padding: list[int], group_size: int = KV_GROUP_SIZE, bits: int = KV_BITS):
         self.keys = None    # (packed, scales, biases) tuple, or None
         self.values = None  # (packed, scales, biases) tuple, or None
         self.group_size = group_size
