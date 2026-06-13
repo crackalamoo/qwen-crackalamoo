@@ -12,6 +12,7 @@ headroom (bf16 estimate) on 16GB.
 
 import queue
 import threading
+import time
 from dataclasses import dataclass, field
 
 import mlx.core as mx
@@ -122,7 +123,9 @@ class BatchScheduler:
         generated token. Returns False if the sequence is already done (EOS or
         max_tokens).
         """
+        t0 = time.perf_counter()
         kv_from_cache, n_cached_tokens = cache.lookup(seq.input_ids)
+        t1 = time.perf_counter()
         if kv_from_cache and n_cached_tokens >= len(seq.input_ids):
             seq.cache = slice_kv_cache(kv_from_cache, len(seq.input_ids) - 1)
             suffix = [seq.input_ids[-1]]
@@ -133,6 +136,7 @@ class BatchScheduler:
             seq.cache = make_prompt_cache(model)
             suffix = seq.input_ids
         seq.n_cached_tokens = n_cached_tokens
+        t2 = time.perf_counter()
         last_logits = prefill_last_token_logits(suffix, seq.cache)
         if not isinstance(seq.cache[0], QuantizedKVCache):
             seq.cache = [
@@ -140,12 +144,22 @@ class BatchScheduler:
                 for layer in seq.cache
             ]
         mx.eval(last_logits)
+        t3 = time.perf_counter()
         cache.insert(seq.input_ids, seq.cache)
+        t4 = time.perf_counter()
         first_token = int(sample(last_logits, seq.temperature, seq.top_p).item())
         track_thinking(seq, first_token)
         seq.last_token = first_token
         seq.generated_ids.append(first_token)
         seq.token_queue.put(first_token)
+        t5 = time.perf_counter()
+        print(
+            f"[prefill] prompt_len={len(seq.input_ids)} n_cached={n_cached_tokens} "
+            f"suffix_len={len(suffix)} | lookup={t1 - t0:.3f}s slice={t2 - t1:.3f}s "
+            f"forward+eval={t3 - t2:.3f}s insert={t4 - t3:.3f}s sample={t5 - t4:.3f}s "
+            f"total={t5 - t0:.3f}s",
+            flush=True,
+        )
         if first_token == EOS_TOKEN_ID or len(seq.generated_ids) >= seq.max_tokens:
             seq.token_queue.put(None)
             return False
