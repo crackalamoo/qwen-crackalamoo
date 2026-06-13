@@ -1,14 +1,20 @@
 import json
+import os
 import time
 import uuid
 
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from batched_inference import submit_request, Sequence
+
+load_dotenv()
+
+QWEN_PORT = int(os.environ.get("QWEN_PORT", "8000"))
 
 app = FastAPI()
 
@@ -355,4 +361,10 @@ async def chat_completions(request: ChatRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=QWEN_PORT)
 

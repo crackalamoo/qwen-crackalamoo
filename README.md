@@ -60,14 +60,19 @@ FastAPI server with an OpenAI-compatible `/v1/chat/completions` endpoint. Respon
 
 Requires Python 3.14+ and uv.
 
+Copy `.env.example` to `.env` and adjust as needed:
+```bash
+cp .env.example .env
+```
+
 ## Usage
 
 **Start the server:**
 ```bash
-uv run uvicorn server:app --reload
+uv run python server.py
 ```
 
-Then open `http://localhost:8000/chat` or hit the API:
+Then open `http://localhost:8000/chat` (or your configured `QWEN_PORT`) or hit the API:
 ```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \

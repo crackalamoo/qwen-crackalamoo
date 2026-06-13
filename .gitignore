@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Local environment config
+.env
+
 .claude/settings.local.json
 
 # Data

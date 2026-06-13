@@ -6,10 +6,16 @@ Usage:
     uv run python finetune/sample_dpo.py
 """
 import json
+import os
 import urllib.request
 from pathlib import Path
 
-SERVER = "http://localhost:8000/v1/chat/completions"
+from dotenv import load_dotenv
+
+load_dotenv()
+
+QWEN_PORT = os.environ.get("QWEN_PORT", "8000")
+SERVER = f"http://localhost:{QWEN_PORT}/v1/chat/completions"
 OUT = Path(__file__).parent.parent / "dpo_raw.jsonl"
 
 # (prompt, chosen_response)
