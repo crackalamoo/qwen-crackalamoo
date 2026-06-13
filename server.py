@@ -73,6 +73,19 @@ def make_chunk(content: str, request_id: str, include_usage: bool = False) -> st
     return f"data: {json.dumps(payload)}\n\n"
 
 
+def make_reasoning_chunk(content: str, request_id: str, include_usage: bool = False) -> str:
+    payload = {
+        "id": request_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": "qwen3-8b",
+        "choices": [{"index": 0, "delta": {"reasoning_content": content}, "finish_reason": None}],
+    }
+    if include_usage:
+        payload["usage"] = None
+    return f"data: {json.dumps(payload)}\n\n"
+
+
 def make_done_chunk(request_id: str, finish_reason: str = "stop", include_usage: bool = False) -> str:
     payload = {
         "id": request_id,
@@ -125,6 +138,7 @@ class TagStateMachine:
     Events yielded:
         ("text", str)        — plain text to emit immediately
         ("tool_call", dict)  — parsed tool call: {"name": ..., "arguments": ...}
+        ("reasoning", str)   — raw <think> block content to stream live
     """
 
     def __init__(self, enabled_tags: list[str]):
@@ -140,21 +154,36 @@ class TagStateMachine:
     def feed(self, delta: str):
         """Feed a text delta; yield zero or more events.
 
-        Accumulates consecutive ("text", ch) results from
-        self._process_char(ch) into a single string.
+        Accumulates consecutive ("text", ch) or ("reasoning", ch) results from
+        self._process_char(ch) into single strings.
         """
         text = ""
+        reasoning = ""
         for ch in delta:
             for event in self._process_char(ch):
-                if event and event[0] == "text":
+                kind = event[0] if event else None
+                if kind == "text":
+                    if reasoning:
+                        yield ("reasoning", reasoning)
+                        reasoning = ""
                     text += event[1]
+                elif kind == "reasoning":
+                    if text:
+                        yield ("text", text)
+                        text = ""
+                    reasoning += event[1]
                 else:
                     if text:
                         yield ("text", text)
                         text = ""
+                    if reasoning:
+                        yield ("reasoning", reasoning)
+                        reasoning = ""
                     yield event
         if text:
             yield ("text", text)
+        if reasoning:
+            yield ("reasoning", reasoning)
 
     def flush(self):
         """Signal end-of-stream; yield any remaining buffered events."""
@@ -167,7 +196,9 @@ class TagStateMachine:
             # Unclosed tool_call — drop it (matches old regex behavior)
             self._buffer = ""
         elif self._state == _STATE_THINK:
-            # Unclosed think — suppressed
+            # Unclosed think — emit any buffered partial content as reasoning
+            if self._buffer:
+                yield ("reasoning", self._buffer)
             self._buffer = ""
         # TEXT state: nothing buffered
         self._state = _STATE_TEXT
@@ -226,10 +257,19 @@ class TagStateMachine:
 
         elif self._state == _STATE_THINK:
             self._buffer += ch
-            if self._buffer.endswith("</think>"):
-                # Discard entire think block
+            closing = "</think>"
+            if self._buffer == closing:
+                # Closing tag fully matched — consume silently, back to TEXT
                 self._buffer = ""
                 self._state = _STATE_TEXT
+            elif closing.startswith(self._buffer):
+                # Still a potential prefix of </think> — keep buffering, don't yield yet
+                pass
+            else:
+                # Not part of the closing tag — emit as reasoning content
+                flushed = self._buffer
+                self._buffer = ""
+                yield ("reasoning", flushed)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +301,9 @@ def stream_sequence_with_tools(seq: Sequence, request_id: str, include_usage: bo
                 elif kind == "tool_call":
                     assert isinstance(value, dict)
                     tool_calls.append(value)
+                elif kind == "reasoning":
+                    assert isinstance(value, str)
+                    yield make_reasoning_chunk(value, request_id, include_usage=include_usage)
 
     # EOS: flush any remaining buffer
     for kind, value in parser.flush():
@@ -270,6 +313,9 @@ def stream_sequence_with_tools(seq: Sequence, request_id: str, include_usage: bo
         elif kind == "tool_call":
             assert isinstance(value, dict)
             tool_calls.append(value)
+        elif kind == "reasoning":
+            assert isinstance(value, str)
+            yield make_reasoning_chunk(value, request_id, include_usage=include_usage)
 
     # Emit tool call chunks (after any text content, which is valid OpenAI format)
     if tool_calls:
