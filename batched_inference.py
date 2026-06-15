@@ -26,6 +26,9 @@ from prefix_cache import cache, slice_kv_cache
 MAX_BATCH = 8
 EOS_TOKEN_ID = tokenizer.eos_token_id
 
+# Max tokens processed in one forward pass during prefill
+PREFILL_CHUNK_SIZE = 2048
+
 # Both <think> and </think> are single tokens in the Qwen3 vocab
 THINK_TOKEN_ID = 151667
 THINK_END_TOKEN_ID = 151668
@@ -74,12 +77,16 @@ def track_thinking(seq: "Sequence", next_token: int) -> None:
 
 def prefill_last_token_logits(suffix: list[int], layer_cache: "list[KVCache] | list[QuantizedKVCache]") -> mx.array:
     """
-    Runs the prompt suffix through the model, updating layer_cache in place,
-    and returns logits for ONLY the final token position: shape [vocab_size].
+    Runs the prompt suffix through the model in chunks of at most
+    PREFILL_CHUNK_SIZE tokens, updating layer_cache in place, and returns
+    logits for ONLY the final token position: shape [vocab_size].
     """
-    # forward pass of the full suffix using the existing prefix cache, excluding lm_head
-    hidden = model.model(mx.array(suffix)[None], cache=layer_cache)
-    # hidden: [1, L, 4096]
+    for i in range(0, len(suffix), PREFILL_CHUNK_SIZE):
+        chunk = suffix[i : min(len(suffix), i+PREFILL_CHUNK_SIZE)]
+        hidden = model.model(mx.array(chunk)[None], cache=layer_cache)
+        mx.eval(hidden)
+
+    # hidden: [1, L, 4096] (L = len of the last chunk)
     last_hidden = hidden[:, -1:, :]
     last_logits = model.lm_head(last_hidden) # [1, 1, 151936]
     last_logits = last_logits[0, 0, :]
