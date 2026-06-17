@@ -18,7 +18,7 @@ from mlx.utils import tree_map
 from mlx_lm.models.cache import QuantizedKVCache
 
 
-MAX_CACHE_TOKENS = 16384  # ~2.3GB KV headroom
+MAX_CACHE_TOKENS = 32768  # ~2.0GB quantized KV headroom
 
 
 def _copy_quantized_layer(layer: QuantizedKVCache, n_tokens: int) -> QuantizedKVCache:
