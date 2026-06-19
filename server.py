@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from batched_inference import submit_request, Sequence
@@ -385,6 +385,103 @@ def stream_sequence(seq: Sequence, request_id: str, include_usage: bool = False)
                 # tool_call events won't occur since <tool_call> is not in enabled_tags
 
 
+def collect_sequence(seq: Sequence, request_id: str) -> dict:
+    """Non-streaming counterpart to stream_sequence. Drains the token queue and
+    returns a complete chat.completion JSON object."""
+    local_ids: list[int] = []
+    decoded_so_far = ""
+    content = ""
+    parser = TagStateMachine(enabled_tags=["<think>"])
+
+    while True:
+        token_id = seq.token_queue.get()
+        if token_id is None:
+            for kind, value in parser.flush():
+                if kind == "text":
+                    content += value
+            break
+        local_ids.append(token_id)
+        new_text = seq_decode(local_ids)
+        safe_text = new_text.rstrip("�")
+        if len(safe_text) > len(decoded_so_far):
+            delta = safe_text[len(decoded_so_far):]
+            decoded_so_far = safe_text
+            for kind, value in parser.feed(delta):
+                if kind == "text":
+                    content += value
+
+    return {
+        "id": request_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": "qwen3-8b",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": content, "refusal": None}, "logprobs": None, "finish_reason": "stop"}],
+        "usage": build_usage(seq, len(local_ids)),
+    }
+
+
+def collect_sequence_with_tools(seq: Sequence, request_id: str) -> dict:
+    """Non-streaming counterpart to stream_sequence_with_tools."""
+    local_ids: list[int] = []
+    decoded_so_far = ""
+    content = ""
+    reasoning_content = ""
+    tool_calls: list[dict] = []
+    parser = TagStateMachine(enabled_tags=["<tool_call>", "<think>"])
+
+    while True:
+        token_id = seq.token_queue.get()
+        if token_id is None:
+            break
+        local_ids.append(token_id)
+        new_text = seq_decode(local_ids)
+        safe_text = new_text.rstrip("�")
+        if len(safe_text) > len(decoded_so_far):
+            delta = safe_text[len(decoded_so_far):]
+            decoded_so_far = safe_text
+            for kind, value in parser.feed(delta):
+                if kind == "text":
+                    content += value
+                elif kind == "reasoning":
+                    reasoning_content += value
+                elif kind == "tool_call":
+                    tool_calls.append(value)
+
+    for kind, value in parser.flush():
+        if kind == "text":
+            content += value
+        elif kind == "reasoning":
+            reasoning_content += value
+        elif kind == "tool_call":
+            tool_calls.append(value)
+
+    finish_reason = "tool_calls" if tool_calls else "stop"
+    message: dict = {"role": "assistant", "content": content or None, "refusal": None}
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+    if tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {
+                    "name": tc["name"],
+                    "arguments": json.dumps(tc["arguments"]) if not isinstance(tc["arguments"], str) else tc["arguments"],
+                },
+            }
+            for tc in tool_calls
+        ]
+
+    return {
+        "id": request_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": "qwen3-8b",
+        "choices": [{"index": 0, "message": message, "logprobs": None, "finish_reason": finish_reason}],
+        "usage": build_usage(seq, len(local_ids)),
+    }
+
+
 def seq_decode(ids: list[int]) -> str:
     from batched_inference import tokenizer
     return tokenizer.decode(ids, skip_special_tokens=True)
@@ -410,6 +507,14 @@ async def chat_completions(request: ChatRequest):
         enable_thinking=enable_thinking,
         thinking_budget=thinking_budget,
     )
+    if not request.stream:
+        result = (
+            collect_sequence_with_tools(seq, request_id)
+            if request.tools
+            else collect_sequence(seq, request_id)
+        )
+        return JSONResponse(content=result)
+
     include_usage = bool(request.stream_options and request.stream_options.include_usage)
     generator = (
         stream_sequence_with_tools(seq, request_id, include_usage=include_usage)
