@@ -1,5 +1,6 @@
 import json
 import os
+import resource
 import time
 import uuid
 
@@ -9,6 +10,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
+
+import mlx.core as mx
+import prefix_cache as _prefix_cache
 
 from batched_inference import submit_request, Sequence
 
@@ -485,6 +489,26 @@ def collect_sequence_with_tools(seq: Sequence, request_id: str) -> dict:
 def seq_decode(ids: list[int]) -> str:
     from batched_inference import tokenizer
     return tokenizer.decode(ids, skip_special_tokens=True)
+
+
+@app.get("/debug/memory")
+async def debug_memory():
+    gb = 1024 ** 3
+    # macOS getrusage returns bytes for ru_maxrss (unlike Linux which uses KB)
+    rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+    return JSONResponse({
+        "mlx": {
+            "active_gb": round(mx.get_active_memory() / gb, 3),
+            "pool_gb": round(mx.get_cache_memory() / gb, 3),
+            "peak_gb": round(mx.get_peak_memory() / gb, 3),
+        },
+        "radix_cache": {
+            "cached_tokens": _prefix_cache.cache._total_cached_tokens,
+            "max_tokens": _prefix_cache.MAX_CACHE_TOKENS,
+        },
+        "process_rss_gb": round(rss_bytes / gb, 3),
+    })
 
 
 @app.get("/chat")

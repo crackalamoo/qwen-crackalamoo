@@ -287,12 +287,13 @@ class BatchScheduler:
                     layer.filter(keep)
             else:
                 self._batch_cache = None
+                mx.clear_cache()  # batch drained — release pool before going idle
 
             # Cheap safety net: a partial filter() (one sequence in a batch
             # finishing early while others continue) can dump freed
             # buffers into the cache. Clear them here
             self._tick += 1
-            if self._tick % 100 == 0:
+            if self._tick % 100 == 0 and keep:
                 mx.clear_cache()
 
 

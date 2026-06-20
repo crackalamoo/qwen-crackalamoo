@@ -7,6 +7,7 @@ from mlx_lm.models.cache import make_prompt_cache
 MODEL_ID = "mlx-community/Qwen3-8B-4bit"
 
 model, tokenizer = load(MODEL_ID)
+mx.set_memory_limit(8 * 1024**3)
 
 # optionally load a LoRA adapter: set ADAPTER env var to path/to/adapters.npz
 import os
