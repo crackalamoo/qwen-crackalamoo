@@ -141,8 +141,13 @@ class TagStateMachine:
 
     Events yielded:
         ("text", str)        — plain text to emit immediately
-        ("tool_call", dict)  — parsed tool call: {"name": ..., "arguments": ...}
+        ("tool_call", dict)  — a tool call: {"name": ..., "arguments": ...}.
+                               For malformed JSON, {"name": "", "arguments": ""}.
         ("reasoning", str)   — raw <think> block content to stream live
+
+    After consuming all events (including flush()), check `tool_call_failed`
+    — if set, at least one yielded "tool_call" event above is the blank
+    placeholder above, not a clean parse.
     """
 
     def __init__(self, enabled_tags: list[str]):
@@ -154,6 +159,7 @@ class TagStateMachine:
         self._state = _STATE_TEXT
         self._buffer = ""          # chars accumulated in MAYBE_TAG, TOOL_CALL, or THINK
         self._candidates: list[str] = []  # remaining candidate tags in MAYBE_TAG
+        self.tool_call_failed = False
 
     def feed(self, delta: str):
         """Feed a text delta; yield zero or more events.
@@ -197,8 +203,12 @@ class TagStateMachine:
                 yield ("text", self._buffer)
             self._buffer = ""
         elif self._state == _STATE_TOOL_CALL:
-            # Unclosed tool_call — drop it (matches old regex behavior)
+            # Unclosed tool_call — generation ended mid-block (e.g. hit
+            # max_tokens). Surface a blank tool call rather than dropping it
+            # silently, same as the malformed-JSON case above.
+            self.tool_call_failed = True
             self._buffer = ""
+            yield ("tool_call", {"name": "", "arguments": ""})
         elif self._state == _STATE_THINK:
             # Unclosed think — emit any buffered partial content as reasoning
             if self._buffer:
@@ -257,7 +267,9 @@ class TagStateMachine:
                     args = data.get("arguments", {})
                     yield ("tool_call", {"name": data["name"], "arguments": args})
                 except (json.JSONDecodeError, KeyError):
-                    pass  # silently drop malformed tool call
+                    # Malformed JSON — surface a blank tool call
+                    self.tool_call_failed = True
+                    yield ("tool_call", {"name": "", "arguments": ""})
 
         elif self._state == _STATE_THINK:
             self._buffer += ch
@@ -321,7 +333,8 @@ def stream_sequence_with_tools(seq: Sequence, request_id: str, include_usage: bo
             assert isinstance(value, str)
             yield make_reasoning_chunk(value, request_id, include_usage=include_usage)
 
-    # Emit tool call chunks (after any text content, which is valid OpenAI format)
+    # Emit tool call chunks (after any text content, which is valid OpenAI format).
+    # This includes blank placeholder calls from parser.tool_call_failed.
     if tool_calls:
         for i, tc in enumerate(tool_calls):
             call_id = f"call_{uuid.uuid4().hex[:8]}"
