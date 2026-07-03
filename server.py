@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -530,10 +530,14 @@ async def chat_ui():
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatRequest):
+async def chat_completions(
+    request: ChatRequest,
+    x_priority: str = Header(default="high", alias="X-Priority"),
+):
     request_id = str(uuid.uuid4())
     messages = [m.model_dump(exclude_none=True) for m in request.messages]
     enable_thinking, thinking_budget = resolve_thinking(request.reasoning_effort)
+    priority = "low" if x_priority == "low" else "high"
     seq = submit_request(
         messages,
         max_tokens=request.max_completion_tokens,
@@ -543,6 +547,7 @@ async def chat_completions(request: ChatRequest):
         tools=request.tools,
         enable_thinking=enable_thinking,
         thinking_budget=thinking_budget,
+        priority=priority,
     )
     if not request.stream:
         result = (

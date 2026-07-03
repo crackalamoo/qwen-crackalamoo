@@ -29,6 +29,21 @@ EOS_TOKEN_ID = tokenizer.eos_token_id
 # Max tokens processed in one forward pass during prefill
 PREFILL_CHUNK_SIZE = 2048
 
+# ~72KB/token effective KV cost (bf16 144KB/token, halved by 8-bit KV quantization).
+KV_BYTES_PER_TOKEN = 72 * 1024
+
+# inference.py caps the whole MLX pool at 8GB (mx.set_memory_limit), not the 16GB
+# physical figure above. ~4GB weights + ~2.25GB prefix cache (MAX_CACHE_TOKENS at
+# the same per-token cost) leaves ~1.75GB for active-batch KV; budget 1.5GB.
+ACTIVE_KV_BUDGET_BYTES = int(1.5 * 1024 ** 3)
+
+# "high" admits ahead of "low" when both fit the memory budget, but effective
+# priority ages with wait time: after 10s a queued "low" outranks any "high"
+# arriving from then on, so it's only overtaken by a bounded set (already-pending
+# "high" plus arrivals in its first 10s), never starved indefinitely.
+BASE_PRIORITY = {"high": 10.0, "low": 0.0}
+AGING_RATE = 1.0  # effective-priority points gained per second of waiting
+
 # Both <think> and </think> are single tokens in the Qwen3 vocab
 THINK_TOKEN_ID = 151667
 THINK_END_TOKEN_ID = 151668
@@ -56,6 +71,70 @@ class Sequence:
     thinking_budget: int | None = None
     think_tokens: int = 0  # tokens generated since <think> was seen
     in_think: bool = False  # currently inside a <think>...</think> block
+    priority: str = "high"  # "high" (interactive) or "low" (background)
+    enqueue_time: float = 0.0  # set by PendingQueue.put(); time.monotonic()
+
+
+def effective_priority(seq: "Sequence", now: float) -> float:
+    """Higher admits first."""
+    base = BASE_PRIORITY.get(seq.priority, BASE_PRIORITY["high"])
+    wait_s = max(0.0, now - seq.enqueue_time)
+    return base + wait_s * AGING_RATE
+
+
+def kv_cost_bytes(seq: "Sequence") -> int:
+    """Worst-case KV footprint if seq's cache grows to its max_tokens cap."""
+    return (len(seq.input_ids) + seq.max_tokens) * KV_BYTES_PER_TOKEN
+
+
+class PendingQueue:
+    """Thread-safe holding area for not-yet-prefilled sequences.
+
+    Priority-ordered and budget-filtered rather than plain FIFO, so a
+    candidate that doesn't fit memory can be skipped in favor of a smaller
+    one behind it.
+    """
+
+    def __init__(self):
+        self._cv = threading.Condition()
+        self._items: list[Sequence] = []
+
+    def put(self, seq: Sequence) -> None:
+        with self._cv:
+            seq.enqueue_time = time.monotonic()
+            self._items.append(seq)
+            self._cv.notify_all()
+
+    def __len__(self) -> int:
+        with self._cv:
+            return len(self._items)
+
+    def try_pop_best(self, fits) -> "Sequence | None":
+        """Pop the highest-priority sequence matching fits(seq), or None if none fit."""
+        with self._cv:
+            now = time.monotonic()
+            best_idx = None
+            best_score = None
+            for i, seq in enumerate(self._items):
+                if not fits(seq):
+                    continue
+                score = effective_priority(seq, now)
+                if best_score is None or score > best_score:
+                    best_idx, best_score = i, score
+            if best_idx is None:
+                return None
+            return self._items.pop(best_idx)
+
+    def pop_best_blocking(self) -> Sequence:
+        """Blocks until non-empty, then pops the highest-priority sequence,
+        ignoring the memory budget -- used only when active is empty, since
+        otherwise an oversized sequence could wait forever."""
+        with self._cv:
+            while not self._items:
+                self._cv.wait()
+            now = time.monotonic()
+            best_idx = max(range(len(self._items)), key=lambda i: effective_priority(self._items[i], now))
+            return self._items.pop(best_idx)
 
 
 def track_thinking(seq: "Sequence", next_token: int) -> None:
@@ -113,7 +192,7 @@ def apply_repetition_penalty(logits: mx.array, generated_ids: list[int], penalty
 
 class BatchScheduler:
     def __init__(self):
-        self.pending: queue.Queue[Sequence] = queue.Queue()
+        self.pending = PendingQueue()
         self.active: list[Sequence] = []
         self._batch_cache = None  # list[BatchQuantizedKVCache] | None
         self._tick = 0
@@ -122,6 +201,12 @@ class BatchScheduler:
 
     def submit(self, seq: Sequence) -> None:
         self.pending.put(seq)
+
+    def _active_kv_bytes(self) -> int:
+        return sum(kv_cost_bytes(seq) for seq in self.active)
+
+    def _fits_budget(self, candidate: Sequence) -> bool:
+        return self._active_kv_bytes() + kv_cost_bytes(candidate) <= ACTIVE_KV_BUDGET_BYTES
 
     def _prefill(self, seq: Sequence) -> bool:
         """
@@ -242,18 +327,19 @@ class BatchScheduler:
         Main scheduler loop. Runs in a background thread.
         """
         while True:
-            # populate batch
+            # populate batch: admit by priority, deferring (not rejecting) anything
+            # over budget until something active finishes and frees memory.
             while len(self.active) < MAX_BATCH:
-                try:
-                    seq = self.pending.get_nowait()
-                    seq_alive = self._prefill(seq)
-                    if seq_alive:
-                        self._add_to_batch(seq)
-                except queue.Empty:
-                    break # no sequences to work with
+                seq = self.pending.try_pop_best(self._fits_budget)
+                if seq is None:
+                    break # nothing pending fits right now
+                seq_alive = self._prefill(seq)
+                if seq_alive:
+                    self._add_to_batch(seq)
 
             if not self.active:
-                seq = self.pending.get() # blocks here
+                # nothing active to free memory -- admit unconditionally or block forever
+                seq = self.pending.pop_best_blocking()
                 seq_alive = self._prefill(seq)
                 if seq_alive:
                     self._add_to_batch(seq)
@@ -310,6 +396,7 @@ def submit_request(
     tools: list | None = None,
     enable_thinking: bool = False,
     thinking_budget: int | None = None,
+    priority: str = "high",
 ) -> Sequence:
     """Build a Sequence from a chat messages list and submit it to the scheduler."""
     from inference import build_prompt
@@ -321,6 +408,7 @@ def submit_request(
         top_p=top_p,
         repetition_penalty=repetition_penalty,
         thinking_budget=thinking_budget,
+        priority=priority if priority in BASE_PRIORITY else "high",
     )
     scheduler.submit(seq)
     return seq
