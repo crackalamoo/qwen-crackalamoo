@@ -14,7 +14,7 @@ from pydantic import BaseModel
 import mlx.core as mx
 import prefix_cache as _prefix_cache
 
-from batched_inference import submit_request, Sequence
+from batched_inference import submit_request, Sequence, PromptTooLargeError
 
 load_dotenv()
 
@@ -533,22 +533,45 @@ async def chat_ui():
 async def chat_completions(
     request: ChatRequest,
     x_priority: str = Header(default="high", alias="X-Priority"),
+    x_max_prompt_tokens: str | None = Header(default=None, alias="X-Max-Prompt-Tokens"),
 ):
     request_id = str(uuid.uuid4())
     messages = [m.model_dump(exclude_none=True) for m in request.messages]
     enable_thinking, thinking_budget = resolve_thinking(request.reasoning_effort)
     priority = "low" if x_priority == "low" else "high"
-    seq = submit_request(
-        messages,
-        max_tokens=request.max_completion_tokens,
-        temperature=request.temperature,
-        top_p=request.top_p,
-        repetition_penalty=request.repetition_penalty,
-        tools=request.tools,
-        enable_thinking=enable_thinking,
-        thinking_budget=thinking_budget,
-        priority=priority,
-    )
+
+    max_prompt_tokens = None
+    if x_max_prompt_tokens is not None:
+        try:
+            parsed = int(x_max_prompt_tokens)
+            if parsed > 0:
+                max_prompt_tokens = parsed
+        except ValueError:
+            pass  # ignore garbage header, fall back to hard-ceiling-only
+
+    try:
+        seq = submit_request(
+            messages,
+            max_tokens=request.max_completion_tokens,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            repetition_penalty=request.repetition_penalty,
+            tools=request.tools,
+            enable_thinking=enable_thinking,
+            thinking_budget=thinking_budget,
+            priority=priority,
+            max_prompt_tokens=max_prompt_tokens,
+        )
+    except PromptTooLargeError as e:
+        return JSONResponse(status_code=400, content={
+            "error": {
+                "message": f"This model's maximum context length is {e.limit} tokens. "
+                           f"However, your messages resulted in {e.prompt_tokens} tokens.",
+                "type": "invalid_request_error",
+                "param": "messages",
+                "code": "context_length_exceeded",
+            }
+        })
     if not request.stream:
         result = (
             collect_sequence_with_tools(seq, request_id)

@@ -44,6 +44,18 @@ ACTIVE_KV_BUDGET_BYTES = int(1.5 * 1024 ** 3)
 BASE_PRIORITY = {"high": 10.0, "low": 0.0}
 AGING_RATE = 1.0  # effective-priority points gained per second of waiting
 
+# Requests over this are rejected before submission
+HARD_MAX_PROMPT_TOKENS = 50_000
+
+
+class PromptTooLargeError(Exception):
+    """Raised when a request's tokenized prompt exceeds its effective limit."""
+
+    def __init__(self, prompt_tokens: int, limit: int):
+        self.prompt_tokens = prompt_tokens
+        self.limit = limit
+        super().__init__(f"prompt has {prompt_tokens} tokens, limit is {limit}")
+
 # Both <think> and </think> are single tokens in the Qwen3 vocab
 THINK_TOKEN_ID = 151667
 THINK_END_TOKEN_ID = 151668
@@ -397,10 +409,16 @@ def submit_request(
     enable_thinking: bool = False,
     thinking_budget: int | None = None,
     priority: str = "high",
+    max_prompt_tokens: int | None = None,
 ) -> Sequence:
     """Build a Sequence from a chat messages list and submit it to the scheduler."""
     from inference import build_prompt
     input_ids: list[int] = build_prompt(messages, tools=tools, enable_thinking=enable_thinking).tolist()
+    effective_limit = HARD_MAX_PROMPT_TOKENS
+    if max_prompt_tokens is not None:
+        effective_limit = min(max_prompt_tokens, HARD_MAX_PROMPT_TOKENS)
+    if len(input_ids) > effective_limit:
+        raise PromptTooLargeError(len(input_ids), effective_limit)
     seq = Sequence(
         input_ids=input_ids,
         max_tokens=max_tokens,
