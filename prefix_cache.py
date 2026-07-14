@@ -85,30 +85,33 @@ class RadixCache:
         """
         with self._lock:
             best_cache = None
+            depth = 0
             best_depth = 0
             node: RadixNode = self._root
             while node.children:
-                child = node.children.get(tokens[best_depth], None)
+                child = node.children.get(tokens[depth], None)
                 if child is None:
                     break
 
                 shared = 1
-                while shared < min(len(child.tokens), len(tokens) - best_depth) and tokens[best_depth+shared] == child.tokens[shared]:
+                while shared < min(len(child.tokens), len(tokens) - depth) and tokens[depth+shared] == child.tokens[shared]:
                     shared += 1
 
                 child.last_access = time.time()
                 if shared == len(child.tokens):
+                    depth += len(child.tokens)
                     if child.kv_cache:
                         best_cache = _copy_kv_cache(child.kv_cache)
-                    best_depth += len(child.tokens)
+                        best_depth = depth
                     node = child
                 else:
+                    depth += shared
                     if child.kv_cache:
-                        best_cache = slice_kv_cache(child.kv_cache, best_depth + shared)
-                    best_depth += shared
+                        best_depth = depth
+                        best_cache = slice_kv_cache(child.kv_cache, best_depth)
                     break
 
-                if best_depth >= len(tokens):
+                if depth >= len(tokens):
                     break
             return (best_cache, best_depth)
 
@@ -193,26 +196,36 @@ class RadixCache:
     def _maybe_evict(self) -> None:
         """Evict LRU leaves until _total_cached_tokens <= MAX_CACHE_TOKENS."""
         while self._total_cached_tokens > MAX_CACHE_TOKENS:
-            leaf = self._find_lru_leaf(self._root)
+            leaf, leaf_path = self._find_lru_leaf(self._root)
             if leaf is None:
                 break
-            self._evict_leaf(leaf)
+            self._evict_leaf(leaf, leaf_path)
 
-    def _find_lru_leaf(self, node: RadixNode) -> Optional["RadixNode"]:
+
+    def _find_lru_leaf(self, node: RadixNode, path: list[RadixNode]=[]) -> Optional["RadixNode"]:
         """Return the node with the oldest last_access and kv_cache != None."""
+        path = path + [node]
         best = node if node.kv_cache is not None else None
+        best_path = path if best is not None else None
         for child in node.children.values():
-            candidate = self._find_lru_leaf(child)
+            candidate, candidate_path = self._find_lru_leaf(child, path)
             if candidate is not None:
                 if best is None or candidate.last_access < best.last_access:
                     best = candidate
-        return best
+                    best_path = candidate_path
+        return best, best_path
 
-    def _evict_leaf(self, leaf: RadixNode) -> None:
+    def _evict_leaf(self, leaf: RadixNode, leaf_path: list[RadixNode]) -> None:
         """Remove a node's KV cache and update token count."""
         if leaf.kv_cache is not None:
             self._total_cached_tokens -= leaf.token_count()
             leaf.kv_cache = None
+            if leaf_path:
+                for i in reversed(range(1, len(leaf_path))):
+                    parent = leaf_path[i-1]
+                    child = leaf_path[i]
+                    if not child.kv_cache and not child.children:
+                        del parent.children[child.tokens[0]]
 
 
 # module-level singleton

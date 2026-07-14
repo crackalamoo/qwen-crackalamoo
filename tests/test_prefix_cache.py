@@ -61,3 +61,22 @@ def test_insert_split_on_diverging_prefix(cache):
     kv3, depth3 = cache.lookup([1, 2, 3, 9])
     assert kv3[0].offset == 3
     assert depth3 == 3
+
+
+def test_lookup_reports_no_match_at_uncached_branch_point(cache):
+    cache.insert([1, 2, 3, 4], fake_kv(4))
+    cache.insert([1, 2, 5, 6], fake_kv(4))
+
+    kv, depth = cache.lookup([1, 2])
+    assert kv is None
+    assert depth == 0
+
+
+def test_lookup_passes_through_uncached_branch_point_to_cached_child(cache):
+    cache.insert([1, 2, 3, 4], fake_kv(4))
+    cache.insert([1, 2, 5, 6], fake_kv(4))
+
+    kv, depth = cache.lookup([1, 2, 5, 6])
+    assert depth == 4
+    assert kv is not None
+    assert kv[0].offset == 4
