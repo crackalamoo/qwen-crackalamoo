@@ -202,9 +202,9 @@ class RadixCache:
             self._evict_leaf(leaf, leaf_path)
 
 
-    def _find_lru_leaf(self, node: RadixNode, path: list[RadixNode]=[]) -> Optional["RadixNode"]:
+    def _find_lru_leaf(self, node: RadixNode, path: Optional[list[RadixNode]]=None) -> Optional["RadixNode"]:
         """Return the node with the oldest last_access and kv_cache != None."""
-        path = path + [node]
+        path = (path or []) + [node]
         best = node if node.kv_cache is not None else None
         best_path = path if best is not None else None
         for child in node.children.values():
