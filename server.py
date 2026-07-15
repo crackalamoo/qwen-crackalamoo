@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 import resource
 import time
 import uuid
@@ -19,6 +20,10 @@ from batched_inference import submit_request, Sequence, PromptTooLargeError
 load_dotenv()
 
 QWEN_PORT = int(os.environ.get("QWEN_PORT", "8000"))
+
+# How long a streaming generator will wait for the next token before emitting
+# an SSE comment line to keep the connection alive
+KEEPALIVE_INTERVAL_SECONDS = 15.0
 
 app = FastAPI()
 
@@ -301,7 +306,11 @@ def stream_sequence_with_tools(seq: Sequence, request_id: str, include_usage: bo
     tool_calls: list[dict] = []
 
     while True:
-        token_id = seq.token_queue.get()
+        try:
+            token_id = seq.token_queue.get(timeout=KEEPALIVE_INTERVAL_SECONDS)
+        except queue.Empty:
+            yield ": keepalive\n\n"
+            continue
         if token_id is None:
             break
         local_ids.append(token_id)
@@ -379,7 +388,11 @@ def stream_sequence(seq: Sequence, request_id: str, include_usage: bool = False)
     parser = TagStateMachine(enabled_tags=["<think>"])
 
     while True:
-        token_id = seq.token_queue.get()
+        try:
+            token_id = seq.token_queue.get(timeout=KEEPALIVE_INTERVAL_SECONDS)
+        except queue.Empty:
+            yield ": keepalive\n\n"
+            continue
         if token_id is None:
             for kind, value in parser.flush():
                 if kind == "text":
