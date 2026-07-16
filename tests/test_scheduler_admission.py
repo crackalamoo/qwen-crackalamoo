@@ -175,3 +175,22 @@ def test_effective_priority_ages_linearly():
     now = 5.0
     expected = bi.BASE_PRIORITY["low"] + 5.0 * bi.AGING_RATE
     assert bi.effective_priority(seq, now) == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# Part 3: cache-insert gating (should_cache_insert)
+# ---------------------------------------------------------------------------
+
+def test_high_priority_may_be_cached():
+    seq = make_seq(prompt_tokens=10, priority="high")
+    assert bi.should_cache_insert(seq) is True
+
+
+def test_low_priority_is_never_cached():
+    seq = make_seq(prompt_tokens=10, priority="low")
+    assert bi.should_cache_insert(seq) is False
+
+
+def test_think_block_blocks_caching_even_for_high_priority():
+    seq = make_seq(prompt_tokens=10, priority="high")
+    assert bi.should_cache_insert(seq, generated_text="reasoning</think>answer") is False

@@ -94,6 +94,18 @@ def effective_priority(seq: "Sequence", now: float) -> float:
     return base + wait_s * AGING_RATE
 
 
+def should_cache_insert(seq: "Sequence", generated_text: str = "") -> bool:
+    """
+    Gate for cache.insert(): should this sequence's KV be written into the
+    shared radix cache for other requests to reuse? Does not gate cache read.
+    """
+    if "</think>" in generated_text:
+        return False
+    if seq.priority == "low":
+        return False
+    return True
+
+
 def kv_cost_bytes(seq: "Sequence") -> int:
     """Worst-case KV footprint if seq's cache grows to its max_tokens cap."""
     return (len(seq.input_ids) + seq.max_tokens) * KV_BYTES_PER_TOKEN
@@ -249,7 +261,8 @@ class BatchScheduler:
             ]
         mx.eval(last_logits)
         t3 = time.perf_counter()
-        cache.insert(seq.input_ids, seq.cache)
+        if should_cache_insert(seq):
+            cache.insert(seq.input_ids, seq.cache)
         t4 = time.perf_counter()
         first_token = int(sample(last_logits, seq.temperature, seq.top_p).item())
         track_thinking(seq, first_token)
@@ -366,10 +379,7 @@ class BatchScheduler:
                 for i in finished:
                     seq = self.active[i]
                     generated_text = tokenizer.decode(seq.generated_ids, skip_special_tokens=True)
-                    if "</think>" in generated_text:
-                        # future turns strip <think> blocks from history, so
-                        # the finished sequence would never be looked up again.
-                        # skip to avoid wasting cache memory
+                    if not should_cache_insert(seq, generated_text):
                         continue
                     full_tokens = seq.input_ids + seq.generated_ids
                     extracted_kv_cache = [layer.extract(i) for layer in self._batch_cache]
