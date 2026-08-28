@@ -26,3 +26,8 @@ dpo_raw.jsonl
 dpo_with_ref.jsonl
 train.jsonl
 val.jsonl
+
+# Trained LoRA adapters from the PyTorch port (73 MB of safetensors; regenerate
+# with finetune_torch/train.py and finetune_torch/dpo_train.py)
+finetune_torch/adapters/
+finetune_torch/dpo_adapters/
