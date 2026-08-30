@@ -10,6 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 import mlx.core as mx
@@ -586,11 +587,8 @@ async def chat_completions(
             }
         })
     if not request.stream:
-        result = (
-            collect_sequence_with_tools(seq, request_id)
-            if request.tools
-            else collect_sequence(seq, request_id)
-        )
+        collect = collect_sequence_with_tools if request.tools else collect_sequence
+        result = await run_in_threadpool(collect, seq, request_id)
         return JSONResponse(content=result)
 
     include_usage = bool(request.stream_options and request.stream_options.include_usage)

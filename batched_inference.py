@@ -29,12 +29,14 @@ EOS_TOKEN_ID = tokenizer.eos_token_id
 # Max tokens processed in one forward pass during prefill
 PREFILL_CHUNK_SIZE = 2048
 
-# ~72KB/token effective KV cost (bf16 144KB/token, halved by 8-bit KV quantization).
-KV_BYTES_PER_TOKEN = 72 * 1024
+# ~80.6KB/token measured effective KV cost. The 8-bit payload is 72KB/token
+# (bf16 is 144KB); the rest is the per-group scales and biases mx.quantize stores
+# alongside it.
+KV_BYTES_PER_TOKEN = 82 * 1024
 
-# inference.py caps the whole MLX pool at 8GB (mx.set_memory_limit), not the 16GB
-# physical figure above. ~4GB weights + ~2.25GB prefix cache (MAX_CACHE_TOKENS at
-# the same per-token cost) leaves ~1.75GB for active-batch KV; budget 1.5GB.
+# inference.py's mx.set_memory_limit(8GB) is advisory; the real ceiling is Metal's
+# ~10.7GB working set. ~4GB weights + ~2.6GB prefix cache (MAX_CACHE_TOKENS at
+# the same per-token cost) leaves ~4.1GB for active-batch KV; budget 1.5GB.
 ACTIVE_KV_BUDGET_BYTES = int(1.5 * 1024 ** 3)
 
 # "high" admits ahead of "low" when both fit the memory budget, but effective
@@ -45,7 +47,7 @@ BASE_PRIORITY = {"high": 10.0, "low": 0.0}
 AGING_RATE = 1.0  # effective-priority points gained per second of waiting
 
 # Requests over this are rejected before submission
-HARD_MAX_PROMPT_TOKENS = 50_000
+HARD_MAX_PROMPT_TOKENS = 40_960
 
 
 class PromptTooLargeError(Exception):
