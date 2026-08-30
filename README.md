@@ -25,7 +25,32 @@ FastAPI server with an OpenAI-compatible `/v1/chat/completions` endpoint. Respon
 | `split.py` | Train/val split with a minimum completion-length filter |
 | `sample_dpo.py` | Generates DPO candidate pairs by sampling the SFT model |
 
-## Sample outputs
+## Benchmarks
+
+Qwen3-8B-4bit on an M2 Pro Mac mini (16GB, 200 GB/s). Weights 4.29GB resident, KV cache 80.6 KB/token measured.
+
+| Context | Decode | Bandwidth limit | Prefill | TTFT |
+|---|---|---|---|---|
+| 60 | 27.2 tok/s | 43.4 tok/s (63%) | — | 0.4s |
+| 3.3k | 22.0 tok/s | 41.0 tok/s (54%) | 157 tok/s | 21s |
+| 13k | 14.5 tok/s | 35.2 tok/s (41%) | 124 tok/s | 108s |
+
+Decode is memory-bandwidth-bound: every step reads all 4.29GB of weights plus the whole KV
+cache onto the chip, so 200 GB/s sets a tokens/second limit.
+
+A 13k-token prompt takes **108s cold, 7.5s on a cache hit**.
+
+Concurrent requests (short prompts, aggregate across the batch):
+
+| Batch | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| tok/s | 26.8 | 34.2 | 38.6 | 34.9 |
+
+Batching amortizes the weight read poorly. Measured in isolation, `mx.quantized_matmul`
+costs 2.4x more at batch 4 than at batch 1, but 5.4x more at batch 8, explaining why
+amortized throughput actually drops off.
+
+## Sample outputs (fine-tuned)
 
 > **is cursor actually worth it**
 >
